@@ -302,10 +302,10 @@ export default function ApexTrioTracker() {
                 if (!res.ok) throw new Error(await res.text());
                 alert("Posted session to Discord ✅");
               } catch (err: unknown) {
-  console.error(err);
-  const msg = err instanceof Error ? err.message : String(err);
-  alert(`Failed to post to Discord. ${msg ? `Details: ${msg}` : "Check server logs & .env."} ❌`);
-}
+                console.error(err);
+                const msg = err instanceof Error ? err.message : String(err);
+                alert(`Failed to post to Discord. ${msg ? `Details: ${msg}` : "Check server logs & .env."} ❌`);
+              }
 
             }}
             className="rounded-2xl border border-neutral-200 px-4 py-2 text-sm hover:shadow transition"
