@@ -12,6 +12,8 @@ export default function ApexTrioTracker() {
     games: number;
     totalDamage: number;
     totalKills: number;
+    oneKGames: number; // >= 1000 dmg
+    twoKGames: number; // >= 2000 dmg
     history: GameEntry[];
   };
 
@@ -23,10 +25,18 @@ export default function ApexTrioTracker() {
     games: 0,
     totalDamage: 0,
     totalKills: 0,
+    oneKGames: 0,
+    twoKGames: 0,
     history: [],
   });
 
   const [players, setPlayers] = useState<Player[]>([makeNewPlayer()]);
+
+  // Group RP (ranked points) for the whole squad this session
+  const [rpInput, setRpInput] = useState<string>("");
+  const [totalRP, setTotalRP] = useState<number>(0);
+  const [rpHistory, setRpHistory] = useState<number[]>([]);
+
   const MAX_PLAYERS = 3;
 
   const addPlayer = () => {
@@ -42,6 +52,7 @@ export default function ApexTrioTracker() {
     setPlayers((prev) => prev.map((pl) => (pl.id === id ? { ...pl, [field]: value } : pl)));
   };
 
+  // Commit one player's current inputs to their totals (Enter key or Add button)
   const commitCurrentGame = (id: string) => {
     setPlayers((prev) =>
       prev.map((pl) => {
@@ -50,6 +61,7 @@ export default function ApexTrioTracker() {
         const k = Number(pl.killsInput);
         const validDmg = Number.isFinite(dmg) && dmg >= 0 ? dmg : 0;
         const validKills = Number.isFinite(k) && k >= 0 ? k : 0;
+        // If both inputs are empty/NaN, do nothing
         if ((pl.damageInput ?? "") === "" && (pl.killsInput ?? "") === "") return pl;
         const entry: GameEntry = { damage: validDmg, kills: validKills };
         return {
@@ -57,6 +69,8 @@ export default function ApexTrioTracker() {
           games: pl.games + 1,
           totalDamage: pl.totalDamage + validDmg,
           totalKills: pl.totalKills + validKills,
+          oneKGames: pl.oneKGames + (validDmg >= 1000 ? 1 : 0),
+          twoKGames: pl.twoKGames + (validDmg >= 2000 ? 1 : 0),
           damageInput: "",
           killsInput: "",
           history: [...pl.history, entry],
@@ -65,6 +79,7 @@ export default function ApexTrioTracker() {
     );
   };
 
+  // Undo the last committed game for a player
   const undoLastGame = (id: string) => {
     setPlayers((prev) =>
       prev.map((pl) => {
@@ -76,6 +91,9 @@ export default function ApexTrioTracker() {
           games: Math.max(0, pl.games - 1),
           totalDamage: Math.max(0, pl.totalDamage - last.damage),
           totalKills: Math.max(0, pl.totalKills - last.kills),
+          oneKGames: Math.max(0, pl.oneKGames - (last.damage >= 1000 ? 1 : 0)),
+          twoKGames: Math.max(0, pl.twoKGames - (last.damage >= 2000 ? 1 : 0)),
+          // optional: restore last inputs for quick edit
           damageInput: String(last.damage ?? ""),
           killsInput: String(last.kills ?? ""),
           history: pl.history.slice(0, -1),
@@ -84,6 +102,23 @@ export default function ApexTrioTracker() {
     );
   };
 
+  // RP controls (group-wide)
+  const commitRP = () => {
+    const delta = Number(rpInput);
+    if (!Number.isFinite(delta) || rpInput === "") return;
+    setTotalRP((v) => v + delta);
+    setRpHistory((h) => [...h, delta]);
+    setRpInput("");
+  };
+  const undoRP = () => {
+    if (rpHistory.length === 0) return;
+    const last = rpHistory[rpHistory.length - 1];
+    setTotalRP((v) => v - last);
+    setRpHistory((h) => h.slice(0, -1));
+    setRpInput(String(last));
+  };
+
+  // Derived averages per player
   const derived = useMemo(() => {
     return players.map((p) => ({
       id: p.id,
@@ -92,9 +127,11 @@ export default function ApexTrioTracker() {
     }));
   }, [players]);
 
+  // Group-level averages across players with at least one game
   const { groupAvgDamage, groupAvgKills } = useMemo(() => {
     const withGames = players.filter((p) => p.games > 0);
-    if (withGames.length === 0) return { groupAvgDamage: 0, groupAvgKills: 0 };
+    if (withGames.length === 0)
+      return { groupAvgDamage: 0, groupAvgKills: 0 };
     const avgDamage = withGames.reduce((acc, p) => acc + p.totalDamage / p.games, 0) / withGames.length;
     const avgKills = withGames.reduce((acc, p) => acc + p.totalKills / p.games, 0) / withGames.length;
     return { groupAvgDamage: avgDamage, groupAvgKills: avgKills };
@@ -102,12 +139,13 @@ export default function ApexTrioTracker() {
 
   return (
     <main className="min-h-screen bg-neutral-50 text-neutral-900 px-4 py-8">
-      <div className="mx-auto max-w-[1100px]">
+      {/* Increase width by +200px (was 1100px) */}
+      <div className="mx-auto max-w-[1300px]">
         <header className="mb-6 flex items-end justify-between gap-4">
           <div>
             <h1 className="text-2xl font-bold tracking-tight">Apex Stats – Trio Tracker</h1>
             <p className="text-sm text-neutral-500">
-              Enter damage & kills for a game, then press <kbd className="rounded border px-1">Enter</kbd> or click <em>Add</em> to commit to totals. Add up to 3 players.
+              Enter damage & kills for a game, then press <kbd className="rounded border px-1">Enter</kbd> or click <em>Add</em> to commit to totals. Track squad RP too.
             </p>
           </div>
 
@@ -145,8 +183,43 @@ export default function ApexTrioTracker() {
             <div className="text-xl font-semibold">{groupAvgKills.toFixed(1)}</div>
           </div>
           <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
-            <div className="text-xs uppercase tracking-wide text-neutral-500 mb-1">Hint</div>
-            <div className="text-sm text-neutral-600">Hit Enter or the Add button to record a game for that row. Use Undo to revert the last add.</div>
+            <div className="text-xs uppercase tracking-wide text-neutral-500 mb-1">Total RP</div>
+            <div className="text-xl font-semibold">{totalRP}</div>
+          </div>
+        </section>
+
+        {/* RP Controls (group-wide) */}
+        <section className="mb-4 rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <div className="text-sm font-medium">Ranked Points (RP) — Session Total: <span className="font-semibold">{totalRP}</span></div>
+              <p className="text-xs text-neutral-500">Enter RP change per match (can be negative), then press Enter or click Add.</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                value={rpInput}
+                onChange={(e) => setRpInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") commitRP(); }}
+                placeholder="e.g. 45 or -23"
+                className="w-40 rounded-xl border border-neutral-200 px-3 py-2 outline-none focus:ring-2 focus:ring-neutral-200"
+              />
+              <button
+                onClick={commitRP}
+                className="rounded-xl border border-neutral-200 px-3 py-2 text-xs text-neutral-700 hover:shadow-sm"
+                title="Add this RP delta to session total"
+              >
+                Add RP ▶
+              </button>
+              <button
+                onClick={undoRP}
+                className="rounded-xl border border-neutral-200 px-3 py-2 text-xs text-neutral-700 hover:shadow-sm disabled:opacity-50"
+                disabled={rpHistory.length === 0}
+                title="Undo last RP add"
+              >
+                ◀ Undo RP
+              </button>
+            </div>
           </div>
         </section>
 
@@ -159,10 +232,12 @@ export default function ApexTrioTracker() {
                 <th className="px-4 py-3">Name</th>
                 <th className="px-4 py-3">Damage (input)</th>
                 <th className="px-4 py-3">Kills (input)</th>
-                <th className="px-4 py-3 w-[1%]"></th>
+                <th className="px-4 py-3 w-[1%]"></th>{/* Add/Undo buttons */}
                 <th className="px-4 py-3">Games</th>
                 <th className="px-4 py-3">Total Damage</th>
                 <th className="px-4 py-3">Total Kills</th>
+                <th className="px-4 py-3">1k Games</th>
+                <th className="px-4 py-3">2k Games</th>
                 <th className="px-4 py-3">Avg Damage</th>
                 <th className="px-4 py-3">Avg Kills</th>
                 <th className="px-4 py-3 w-[1%]"></th>
@@ -190,9 +265,7 @@ export default function ApexTrioTracker() {
                         min={0}
                         value={p.damageInput}
                         onChange={(e) => updateField(p.id, "damageInput", e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") commitCurrentGame(p.id);
-                        }}
+                        onKeyDown={(e) => { if (e.key === "Enter") commitCurrentGame(p.id); }}
                         placeholder="e.g. 1200"
                         className="w-full rounded-xl border border-neutral-200 px-3 py-2 outline-none focus:ring-2 focus:ring-neutral-200"
                       />
@@ -204,9 +277,7 @@ export default function ApexTrioTracker() {
                         min={0}
                         value={p.killsInput}
                         onChange={(e) => updateField(p.id, "killsInput", e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") commitCurrentGame(p.id);
-                        }}
+                        onKeyDown={(e) => { if (e.key === "Enter") commitCurrentGame(p.id); }}
                         placeholder="e.g. 3"
                         className="w-full rounded-xl border border-neutral-200 px-3 py-2 outline-none focus:ring-2 focus:ring-neutral-200"
                       />
@@ -234,6 +305,8 @@ export default function ApexTrioTracker() {
                     <td className="px-4 py-3 text-neutral-700">{p.games}</td>
                     <td className="px-4 py-3 text-neutral-700">{p.totalDamage}</td>
                     <td className="px-4 py-3 text-neutral-700">{p.totalKills}</td>
+                    <td className="px-4 py-3 text-neutral-700">{p.oneKGames}</td>
+                    <td className="px-4 py-3 text-neutral-700">{p.twoKGames}</td>
                     <td className="px-4 py-3 text-neutral-700">{avgs.avgDamage.toFixed(1)}</td>
                     <td className="px-4 py-3 text-neutral-700">{avgs.avgKills.toFixed(1)}</td>
                     <td className="px-4 py-3">
@@ -261,6 +334,8 @@ export default function ApexTrioTracker() {
                 <td className="px-4 py-3">{players.reduce((acc, p) => acc + p.games, 0)}</td>
                 <td className="px-4 py-3">{players.reduce((acc, p) => acc + p.totalDamage, 0)}</td>
                 <td className="px-4 py-3">{players.reduce((acc, p) => acc + p.totalKills, 0)}</td>
+                <td className="px-4 py-3">{players.reduce((acc, p) => acc + p.oneKGames, 0)}</td>
+                <td className="px-4 py-3">{players.reduce((acc, p) => acc + p.twoKGames, 0)}</td>
                 <td className="px-4 py-3">{groupAvgDamage.toFixed(1)}</td>
                 <td className="px-4 py-3">{groupAvgKills.toFixed(2)}</td>
                 <td className="px-4 py-3" />
@@ -269,10 +344,6 @@ export default function ApexTrioTracker() {
           </table>
         </div>
 
-        <p className="mt-3 text-xs text-neutral-500">
-          Workflows: Type numbers → press Enter (or <em>Add ▶</em>) per row to record a game. Use <em>◀ Undo</em> to revert the last add (restores values to the inputs). Averages are per player (totals ÷ games). Group averages are the mean of player averages with at least one game.
-        </p>
-
         <div className="mt-6 flex items-center gap-3">
           <button
             onClick={async () => {
@@ -280,19 +351,23 @@ export default function ApexTrioTracker() {
               lines.push(`**Apex Session Summary**`);
               const totalGames = players.reduce((a, p) => a + p.games, 0);
               lines.push(`Games recorded: ${totalGames}`);
+              lines.push(`Total RP: ${totalRP}`);
               lines.push("");
               players.forEach((p, i) => {
                 const avgD = p.games > 0 ? (p.totalDamage / p.games).toFixed(0) : "0";
                 const avgK = p.games > 0 ? (p.totalKills / p.games).toFixed(1) : "0.0";
                 lines.push(
-                  `#${i + 1} ${p.name || "(no name)"} — Games: ${p.games}, Total Dmg: ${p.totalDamage}, Total K: ${p.totalKills}, Avg Dmg: ${avgD}, Avg K: ${avgK}`
+                  `#${i + 1} ${p.name || "(no name)"} — Games: ${p.games}, Total Dmg: ${p.totalDamage}, Total K: ${p.totalKills}, 1k: ${p.oneKGames}, 2k: ${p.twoKGames}, Avg Dmg: ${avgD}, Avg K: ${avgK}`
                 );
               });
               lines.push("");
-              lines.push(`Group Avg — Damage: ${groupAvgDamage.toFixed(0)}, Kills: ${groupAvgKills.toFixed(1)}`);
+              lines.push(
+                `Group Avg — Damage: ${groupAvgDamage.toFixed(0)}, Kills: ${groupAvgKills.toFixed(
+                  1
+                )}, Total RP: ${totalRP}`
+              );
 
               const content = lines.join("\n");
-
               try {
                 const res = await fetch("/api/discord", {
                   method: "POST",
@@ -304,18 +379,21 @@ export default function ApexTrioTracker() {
               } catch (err: unknown) {
                 console.error(err);
                 const msg = err instanceof Error ? err.message : String(err);
-                alert(`Failed to post to Discord. ${msg ? `Details: ${msg}` : "Check server logs & .env."} ❌`);
+                alert(
+                  `Failed to post to Discord. ${
+                    msg ? `Details: ${msg}` : "Check server logs & .env."
+                  } ❌`
+                );
               }
-
             }}
             className="rounded-2xl border border-neutral-200 px-4 py-2 text-sm hover:shadow transition"
             title="Send the current session's summary to your Discord channel"
           >
             Post Session to Discord
           </button>
-          <span className="text-xs text-neutral-500">Configure /api/discord server route with a webhook (Option A) in .env.local</span>
         </div>
       </div>
     </main>
   );
 }
+
