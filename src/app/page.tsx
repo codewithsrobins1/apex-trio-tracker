@@ -174,8 +174,8 @@ export default function ApexTrioTracker() {
           <div>
             <h1 className="text-2xl font-bold tracking-tight">Apex Stats – Trio Tracker</h1>
             <p className="text-sm text-neutral-500">
-              Use the Data Entry panel to input each player's stats, then click <em>Add Game (All Rows)</em>.
-              RP & Wins are tracked for the whole squad.
+              `Use the Data Entry panel to input each player's stats, then click <em>Add Game (All Rows)</em>.
+              RP & Wins are tracked for the whole squad.`
             </p>
           </div>
 
