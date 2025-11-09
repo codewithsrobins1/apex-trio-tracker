@@ -3,7 +3,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { supabase } from "@/lib/supabase";
+import { supabaseBrowser } from "@/lib/supabaseClient";
 
 type AppDoc = {
   players: Array<{
@@ -24,8 +24,40 @@ export default function SessionViewerClient({ id }: { id: string }) {
   const [doc, setDoc] = useState<AppDoc | null>(null);
   const [viewerName, setViewerName] = useState<string>("");
   const [viewers, setViewers] = useState<{ id: string; name: string }[]>([]);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
-  // prompt once
+  // ---- helpers -------------------------------------------------------------
+
+  const fetchDoc = async () => {
+    const { data, error } = await supabaseBrowser
+      .from("sessions")
+      .select("doc")
+      .eq("id", id)
+      .single();
+
+    if (error) {
+      console.error("Fetch failed:", error.message);
+      setDoc({ players: [], sessionGames: 0, totalRP: 0, wins: 0 });
+      return;
+    }
+
+    setDoc((data?.doc as AppDoc) ?? { players: [], sessionGames: 0, totalRP: 0, wins: 0 });
+    setLastUpdated(new Date());
+  };
+
+  const onManualRefresh = async () => {
+    setIsRefreshing(true);
+    try {
+      await fetchDoc();
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
+  // ---- effects -------------------------------------------------------------
+
+  // Prompt name once
   useEffect(() => {
     let name = localStorage.getItem("apx_name") || "";
     if (!name) {
@@ -35,52 +67,42 @@ export default function SessionViewerClient({ id }: { id: string }) {
     setViewerName(name);
   }, []);
 
-  // initial load + realtime row subscription
+  // Initial load + realtime row subscription
   useEffect(() => {
     let active = true;
+    let channel: ReturnType<typeof supabaseBrowser.channel> | null = null;
 
-    async function load() {
-      const { data } = await supabase
-        .from("sessions")
-        .select("doc")
-        .eq("id", id)
-        .single();
-
+    (async () => {
       if (!active) return;
-      if (data?.doc) {
-        setDoc(data.doc as AppDoc);
-      } else {
-        setDoc({ players: [], sessionGames: 0, totalRP: 0, wins: 0 });
-      }
+      await fetchDoc();
 
-      const channel = supabase
+      channel = supabaseBrowser
         .channel(`session-db:${id}`)
         .on(
           "postgres_changes",
           { event: "*", schema: "public", table: "sessions", filter: `id=eq.${id}` },
           (payload) => {
             const nextDoc = (payload.new as any)?.doc as AppDoc | undefined;
-            if (nextDoc) setDoc(nextDoc);
+            if (nextDoc) {
+              setDoc(nextDoc);
+              setLastUpdated(new Date());
+            }
           }
         )
         .subscribe();
+    })();
 
-      return () => {
-        supabase.removeChannel(channel);
-      };
-    }
-
-    load();
     return () => {
       active = false;
+      if (channel) supabaseBrowser.removeChannel(channel);
     };
   }, [id]);
 
-  // presence bubbles
+  // Presence bubbles
   useEffect(() => {
     if (!viewerName) return;
 
-    const channel = supabase.channel(`presence:${id}`, {
+    const channel = supabaseBrowser.channel(`presence:${id}`, {
       config: { presence: { key: crypto.randomUUID() } },
     });
 
@@ -104,10 +126,15 @@ export default function SessionViewerClient({ id }: { id: string }) {
     };
   }, [id, viewerName]);
 
+  // ---- derived values (no hooks below this line before returns) ------------
+
+  const players = doc?.players ?? [];
+  const totalDamage = players.reduce((a, p) => a + p.totalDamage, 0);
+  const totalKills = players.reduce((a, p) => a + p.totalKills, 0);
+
   if (!doc) return <div className="p-6">Loading session…</div>;
 
-  const totalDamage = doc.players.reduce((a, p) => a + p.totalDamage, 0);
-  const totalKills = doc.players.reduce((a, p) => a + p.totalKills, 0);
+  // ---- UI ------------------------------------------------------------------
 
   return (
     <div className="relative px-4 py-8 mx-auto max-w-[1300px]">
@@ -132,11 +159,15 @@ export default function SessionViewerClient({ id }: { id: string }) {
         )}
       </div>
 
-      <h1 className="text-2xl font-bold mb-4">Apex Session (Live)</h1>
+      <h1 className="text-2xl font-bold mb-1">Apex Session (Live)</h1>
+      <p className="text-xs text-neutral-500 mb-4">
+        {lastUpdated ? `Last updated ${lastUpdated.toLocaleTimeString()}` : "—"}
+      </p>
+
       <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
           <div className="text-xs text-neutral-500 mb-1">Players</div>
-          <div className="text-xl font-semibold">{doc.players.length}</div>
+          <div className="text-xl font-semibold">{players.length}</div>
         </div>
         <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
           <div className="text-xs text-neutral-500 mb-1">Session Games</div>
@@ -167,7 +198,7 @@ export default function SessionViewerClient({ id }: { id: string }) {
             </tr>
           </thead>
           <tbody>
-            {doc.players.map((p) => (
+            {players.map((p) => (
               <tr key={p.id} className="border-t border-neutral-100">
                 <td className="px-4 py-3">{p.name || "—"}</td>
                 <td className="px-4 py-3">{p.games}</td>
@@ -179,6 +210,20 @@ export default function SessionViewerClient({ id }: { id: string }) {
             ))}
           </tbody>
         </table>
+      </div>
+
+      {/* Manual refresh */}
+      <div className="mt-3 flex items-center gap-3">
+        <button
+          onClick={onManualRefresh}
+          disabled={isRefreshing}
+          className="rounded-lg border px-3 py-1.5 text-sm shadow-sm disabled:opacity-60 cursor-pointer"
+        >
+          {isRefreshing ? "Refreshing..." : "Refresh data"}
+        </button>
+        {isRefreshing && (
+          <span className="text-xs text-neutral-500">Fetching latest from Supabase…</span>
+        )}
       </div>
     </div>
   );

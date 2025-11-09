@@ -1,38 +1,46 @@
+// src/app/api/session/[id]/save/route.ts
 export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseServer";
 
-export async function POST(
-  req: Request,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  try {
-    const { id } = await params; // Next 15 requires awaiting params
-    const body = await req.json(); // { doc: {...} }
+// If you're on Next.js 15, params is a Promise; if you're on 14, remove the `await` and use plain { params: { id: string } }.
+type Ctx = { params: Promise<{ id: string }> };
 
-    if (!id || !body?.doc) {
-      return NextResponse.json({ error: "Missing id or doc" }, { status: 400 });
+export async function POST(req: Request, ctx: Ctx) {
+  try {
+    const { id } = await ctx.params;
+    if (!id) {
+      return NextResponse.json({ error: "Missing id in URL" }, { status: 400 });
     }
+
+    let body: Record<string, any> = {};
+    try {
+      body = await req.json();
+    } catch {
+      return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    }
+
+    // Upsert by primary key `id`. We include whatever fields you send in `body`.
+    // If your table has `updated_at`, this will populate it.
+    const row = { id, ...body, updated_at: new Date().toISOString() };
 
     const supabase = supabaseAdmin();
-
-    // assumes table "sessions" with columns: id (uuid/text pk), doc (jsonb), updated_at (timestamptz)
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from("sessions")
-      .upsert(
-        { id, doc: body.doc, updated_at: new Date().toISOString() },
-        { onConflict: "id" }
-      );
+      .upsert(row, { onConflict: "id" })
+      .select()
+      .single();
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json({ error: error.message }, { status: 400 });
     }
 
-    return NextResponse.json({ ok: true }, { status: 200 });
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : String(e);
-    return NextResponse.json({ error: msg }, { status: 500 });
+    return NextResponse.json(data, { status: 200 });
+  } catch (e: any) {
+    return NextResponse.json(
+      { error: e?.message ?? "Unknown server error" },
+      { status: 500 }
+    );
   }
 }
