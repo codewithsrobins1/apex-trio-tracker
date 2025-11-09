@@ -2,6 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
+import { copyToClipboard } from "@/helpers/copyToClipboard";
 import { useMemo, useState, useEffect, useRef, useCallback } from "react";
 
 export default function ApexTrioTracker() {
@@ -184,15 +185,22 @@ export default function ApexTrioTracker() {
     const id = crypto.randomUUID();
     setSessionId(id);
 
-    await fetch(`/api/session/${id}/save`, {
+    // Save current document to your API (which writes to Supabase)
+    const res = await fetch(`/api/session/${id}/save`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ doc: currentDoc }),
     });
 
+    if (!res.ok) {
+      const t = await res.text().catch(() => "");
+      throw new Error(t || "Failed saving session");
+    }
+
     const url = `${window.location.origin}/s/${id}`;
-    await navigator.clipboard.writeText(url);
-    alert("Live session link copied to clipboard!\n" + url);
+    const ok = await copyToClipboard(url);
+    alert(ok ? `Live session link copied!\n${url}`
+            : `Couldn't copy automatically. Here it is:\n${url}`);
   }, [currentDoc]);
 
   const saveTimer = useRef<number | undefined>(undefined);
@@ -244,10 +252,18 @@ export default function ApexTrioTracker() {
             >
               New Session
             </button>
+
             <button
-              onClick={createSession}
               className="rounded-2xl px-4 py-2 shadow-sm border border-neutral-200 hover:shadow transition"
-              title="Create a live session and copy the viewer link"
+               onClick={async () => {
+                  try {
+                    await createSession();
+                  } catch (err) {
+                    console.error(err);
+                    const msg = err instanceof Error ? err.message : String(err);
+                    alert(`Failed to create session. ${msg ? `Details: ${msg}` : ""}`);
+                  }
+                }}
             >
               Share Live Link
             </button>
