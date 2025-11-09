@@ -1,4 +1,5 @@
-// src/app/api/session/[id]/save/route.ts
+/* eslint-disable react/no-unescaped-entities */
+/* eslint-disable @typescript-eslint/no-explicit-any */
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
