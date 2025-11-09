@@ -1,27 +1,26 @@
 /* eslint-disable react/no-unescaped-entities */
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect, useRef, useCallback } from "react";
 
 export default function ApexTrioTracker() {
+  // ===== Types =====
   type GameEntry = { damage: number; kills: number };
   type Player = {
     id: string;
     name: string;
     damageInput: string;
     killsInput: string;
-    games: number; // per-player games (increments with global Add Game)
+    games: number; // increments with global Add Game
     totalDamage: number;
     totalKills: number;
-    oneKGames: number; // >= 1000 dmg
-    twoKGames: number; // >= 2000 dmg
-    history: GameEntry[]; // individual history (still used by global undo)
+    oneKGames: number; // damage >= 1000
+    twoKGames: number; // damage >= 2000
+    history: GameEntry[];
   };
+  type GameFrame = { entries: { id: string; entry: GameEntry }[] };
 
-  type GameFrame = {
-    entries: { id: string; entry: GameEntry }[]; // one entry per player for a single match
-  };
-
+  // ===== Helpers =====
   const makeNewPlayer = (): Player => ({
     id: crypto.randomUUID(),
     name: "",
@@ -35,49 +34,47 @@ export default function ApexTrioTracker() {
     history: [],
   });
 
+  // ===== State =====
   const [players, setPlayers] = useState<Player[]>([makeNewPlayer()]);
-
-  // Session-level trackers
   const [sessionGames, setSessionGames] = useState<number>(0);
   const [gameHistory, setGameHistory] = useState<GameFrame[]>([]); // for global undo
 
-  // Group RP (ranked points) for the whole squad this session
+  // RP (group-wide)
   const [rpInput, setRpInput] = useState<string>("");
   const [totalRP, setTotalRP] = useState<number>(0);
   const [rpHistory, setRpHistory] = useState<number[]>([]);
 
-  // Wins tracker (group-wide)
+  // Wins (group-wide)
   const [wins, setWins] = useState<number>(0);
   const [winsHistory, setWinsHistory] = useState<number[]>([]);
 
+  // Live session id (when present, host pushes updates)
+  const [sessionId, setSessionId] = useState<string | null>(null);
+
   const MAX_PLAYERS = 3;
 
+  // ===== Player mgmt =====
   const addPlayer = () => {
     if (players.length >= MAX_PLAYERS) return;
     setPlayers((p) => [...p, makeNewPlayer()]);
   };
-
-  const removePlayer = (id: string) => {
-    setPlayers((p) => p.filter((pl) => pl.id !== id));
-  };
-
+  const removePlayer = (id: string) => setPlayers((p) => p.filter((pl) => pl.id !== id));
   const updateField = <K extends keyof Player>(id: string, field: K, value: Player[K]) => {
     setPlayers((prev) => prev.map((pl) => (pl.id === id ? { ...pl, [field]: value } : pl)));
   };
 
-  // ===== Global Add / Undo (applies to everyone) =====
+  // ===== Global Add / Undo =====
   const addGameAll = () => {
-    // Determine if at least one player's inputs are provided; otherwise ignore
     const anyProvided = players.some((p) => (p.damageInput ?? "") !== "" || (p.killsInput ?? "") !== "");
     if (!anyProvided) return;
 
     const frame: GameFrame = { entries: [] };
     setPlayers((prev) =>
       prev.map((pl) => {
-        const dmgRaw = Number(pl.damageInput);
-        const kRaw = Number(pl.killsInput);
-        const dmg = Number.isFinite(dmgRaw) && dmgRaw >= 0 ? dmgRaw : 0;
-        const k = Number.isFinite(kRaw) && kRaw >= 0 ? kRaw : 0;
+        const dmgN = Number(pl.damageInput);
+        const kN = Number(pl.killsInput);
+        const dmg = Number.isFinite(dmgN) && dmgN >= 0 ? dmgN : 0;
+        const k = Number.isFinite(kN) && kN >= 0 ? kN : 0;
         frame.entries.push({ id: pl.id, entry: { damage: dmg, kills: k } });
         return {
           ...pl,
@@ -101,9 +98,9 @@ export default function ApexTrioTracker() {
     const last = gameHistory[gameHistory.length - 1];
     setPlayers((prev) =>
       prev.map((pl) => {
-        const found = last.entries.find((e) => e.id === pl.id);
-        if (!found) return pl;
-        const { damage, kills } = found.entry;
+        const rec = last.entries.find((e) => e.id === pl.id);
+        if (!rec) return pl;
+        const { damage, kills } = rec.entry;
         return {
           ...pl,
           games: Math.max(0, pl.games - 1),
@@ -111,7 +108,6 @@ export default function ApexTrioTracker() {
           totalKills: Math.max(0, pl.totalKills - kills),
           oneKGames: Math.max(0, pl.oneKGames - (damage >= 1000 ? 1 : 0)),
           twoKGames: Math.max(0, pl.twoKGames - (damage >= 2000 ? 1 : 0)),
-          // optional: restore inputs to last values for quick re-entry
           damageInput: String(damage || ""),
           killsInput: String(kills || ""),
           history: pl.history.slice(0, -1),
@@ -122,7 +118,7 @@ export default function ApexTrioTracker() {
     setGameHistory((h) => h.slice(0, -1));
   };
 
-  // RP controls (group-wide)
+  // ===== RP / Wins controls =====
   const commitRP = () => {
     const delta = Number(rpInput);
     if (!Number.isFinite(delta) || rpInput === "") return;
@@ -138,7 +134,6 @@ export default function ApexTrioTracker() {
     setRpInput(String(last));
   };
 
-  // Wins controls (group-wide)
   const addWin = () => {
     setWins((w) => w + 1);
     setWinsHistory((h) => [...h, 1]);
@@ -149,25 +144,71 @@ export default function ApexTrioTracker() {
     setWinsHistory((h) => h.slice(0, -1));
   };
 
-  // Derived averages per player
-  const derived = useMemo(() => {
-    return players.map((p) => ({
-      id: p.id,
-      avgDamage: p.games > 0 ? p.totalDamage / p.games : 0,
-      avgKills: p.games > 0 ? p.totalKills / p.games : 0,
-    }));
-  }, [players]);
+  // ===== Derived =====
+  const derived = useMemo(
+    () =>
+      players.map((p) => ({
+        id: p.id,
+        avgDamage: p.games > 0 ? p.totalDamage / p.games : 0,
+        avgKills: p.games > 0 ? p.totalKills / p.games : 0,
+      })),
+    [players]
+  );
 
-  // Group-level averages across players with at least one game
   const { groupAvgDamage, groupAvgKills } = useMemo(() => {
     const withGames = players.filter((p) => p.games > 0);
-    if (withGames.length === 0)
-      return { groupAvgDamage: 0, groupAvgKills: 0 };
+    if (withGames.length === 0) return { groupAvgDamage: 0, groupAvgKills: 0 };
     const avgDamage = withGames.reduce((acc, p) => acc + p.totalDamage / p.games, 0) / withGames.length;
     const avgKills = withGames.reduce((acc, p) => acc + p.totalKills / p.games, 0) / withGames.length;
     return { groupAvgDamage: avgDamage, groupAvgKills: avgKills };
   }, [players]);
 
+  // ===== Live-sync (host -> Supabase via API) =====
+  const currentDoc = {
+    players: players.map((p) => ({
+      id: p.id,
+      name: p.name,
+      games: p.games,
+      totalDamage: p.totalDamage,
+      totalKills: p.totalKills,
+      oneKGames: p.oneKGames,
+      twoKGames: p.twoKGames,
+    })),
+    sessionGames,
+    totalRP,
+    wins,
+  };
+
+  const createSession = useCallback(async () => {
+    const id = crypto.randomUUID();
+    setSessionId(id);
+
+    await fetch(`/api/session/${id}/save`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ doc: currentDoc }),
+    });
+
+    const url = `${window.location.origin}/s/${id}`;
+    await navigator.clipboard.writeText(url);
+    alert("Live session link copied to clipboard!\n" + url);
+  }, [currentDoc]);
+
+  const saveTimer = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (!sessionId) return;
+    window.clearTimeout(saveTimer.current);
+    saveTimer.current = window.setTimeout(() => {
+      fetch(`/api/session/${sessionId}/save`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ doc: currentDoc }),
+      }).catch(() => {});
+    }, 400);
+    return () => window.clearTimeout(saveTimer.current);
+  }, [currentDoc, sessionId]);
+
+  // ===== UI =====
   return (
     <main className="min-h-screen bg-neutral-50 text-neutral-900 px-4 py-8">
       <div className="mx-auto max-w-[1300px]">
@@ -175,11 +216,9 @@ export default function ApexTrioTracker() {
           <div>
             <h1 className="text-2xl font-bold tracking-tight">Apex Stats – Trio Tracker</h1>
             <p className="text-sm text-neutral-500">
-              `Use the Data Entry panel to input each player's stats, then click <em>Add Game (All Rows)</em>.
-              RP & Wins are tracked for the whole squad.`
+              Use the Data Entry panel to input each player's stats, then click <em>Add Game (All Rows)</em>. RP & Wins are tracked for the whole squad.
             </p>
           </div>
-
           <div className="flex items-center gap-3">
             <button
               onClick={addPlayer}
@@ -200,9 +239,16 @@ export default function ApexTrioTracker() {
                 setWinsHistory([]);
               }}
               className="rounded-2xl px-4 py-2 shadow-sm border border-neutral-200 hover:shadow transition"
-              title="Reset to a single empty row & clear session"
+              title="Reset to a single empty row and clear session"
             >
               New Session
+            </button>
+            <button
+              onClick={createSession}
+              className="rounded-2xl px-4 py-2 shadow-sm border border-neutral-200 hover:shadow transition"
+              title="Create a live session and copy the viewer link"
+            >
+              Share Live Link
             </button>
           </div>
         </header>
@@ -231,7 +277,7 @@ export default function ApexTrioTracker() {
           </div>
         </section>
 
-        {/* Data Entry panel */}
+        {/* Data Entry */}
         <section className="mb-4 rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
           <h2 className="mb-3 text-sm font-semibold text-neutral-700">Data Entry</h2>
           <div className="grid gap-3">
@@ -303,7 +349,7 @@ export default function ApexTrioTracker() {
           </div>
         </section>
 
-        {/* RP & Wins Controls (group-wide) */}
+        {/* RP & Wins Controls */}
         <section className="mb-4 rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
@@ -318,7 +364,9 @@ export default function ApexTrioTracker() {
                 type="number"
                 value={rpInput}
                 onChange={(e) => setRpInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") commitRP(); }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") commitRP();
+                }}
                 placeholder="e.g. 45 or -23"
                 className="w-40 rounded-xl border border-neutral-200 px-3 py-2 outline-none focus:ring-2 focus:ring-neutral-200"
               />
@@ -409,9 +457,7 @@ export default function ApexTrioTracker() {
               <tr className="border-t border-neutral-200 bg-neutral-50 font-semibold">
                 <td className="px-4 py-3 text-neutral-600">—</td>
                 <td className="px-4 py-3 text-neutral-600">Totals/Avg</td>
-                <td className="px-4 py-3">{/* sum of player games */}
-                  {players.reduce((acc, p) => acc + p.games, 0)}
-                </td>
+                <td className="px-4 py-3">{players.reduce((acc, p) => acc + p.games, 0)}</td>
                 <td className="px-4 py-3">{players.reduce((acc, p) => acc + p.totalDamage, 0)}</td>
                 <td className="px-4 py-3">{players.reduce((acc, p) => acc + p.totalKills, 0)}</td>
                 <td className="px-4 py-3">{players.reduce((acc, p) => acc + p.oneKGames, 0)}</td>
@@ -425,14 +471,14 @@ export default function ApexTrioTracker() {
         </div>
 
         <p className="mt-3 text-xs text-neutral-500">
-          Workflows: Enter all player stats in the Data Entry panel → <em>Add Game (All Rows)</em> to commit. Use <em>Undo Last Game</em> to revert the previous commit. RP supports negatives, Wins increments by 1.
+          Workflows: Enter stats for everyone → <em>Add Game (All Rows)</em> to record a match. Use Undo to revert last frame. RP supports negatives; Wins increments by one.
         </p>
 
         <div className="mt-6 flex items-center gap-3">
           <button
             onClick={async () => {
               const lines: string[] = [];
-              lines.push(`**Apex Session Summary**`);
+              lines.push("**Apex Session Summary**");
               lines.push(`Games recorded: ${sessionGames}`);
               lines.push(`Total RP: ${totalRP} | Wins: ${wins}`);
               lines.push("");
@@ -462,55 +508,13 @@ export default function ApexTrioTracker() {
               }
             }}
             className="rounded-2xl border border-neutral-200 px-4 py-2 text-sm hover:shadow transition"
-            title="Send the current session's summary to your Discord channel"
+            title="Send the current session summary to your Discord channel"
           >
             Post Session to Discord
           </button>
-          <span className="text-xs text-neutral-500">Configure /api/discord server route with a webhook (Option A) in .env.local</span>
+          <span className="text-xs text-neutral-500">Configure /api/discord (Discord webhook URL in .env.local)</span>
         </div>
       </div>
     </main>
   );
-}
-
-
-// ==============================
-// FILE: app/api/discord/route.ts
-// Option A: Webhook-based posting
-// ==============================
-// Place this file at app/api/discord/route.ts
-// Requires: DISCORD_WEBHOOK_URL in .env.local
-
-export const dynamic = "force-dynamic"; // ensure no caching in vercel-like hosts
-
-import { NextResponse } from "next/server";
-
-export async function POST(req: Request) {
-  try {
-    const { content } = await req.json();
-    if (!content || typeof content !== "string") {
-      return NextResponse.json({ error: "Missing 'content' string" }, { status: 400 });
-    }
-
-    const url = process.env.DISCORD_WEBHOOK_URL;
-    if (!url) {
-      return NextResponse.json({ error: "Missing DISCORD_WEBHOOK_URL env var" }, { status: 500 });
-    }
-
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content }),
-    });
-
-    if (!res.ok) {
-      const text = await res.text();
-      return NextResponse.json({ error: text || "Discord webhook error" }, { status: res.status });
-    }
-
-    return NextResponse.json({ ok: true }, { status: 200 });
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : "Unknown error";
-    return NextResponse.json({ error: message }, { status: 500 });
-  }
 }
