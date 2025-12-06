@@ -132,98 +132,158 @@ export default function SessionViewerClient({ id }: { id: string }) {
   const totalDamage = players.reduce((a, p) => a + p.totalDamage, 0);
   const totalKills = players.reduce((a, p) => a + p.totalKills, 0);
 
-  if (!doc) return <div className="p-6">Loading session…</div>;
+  const primaryButton =
+    "inline-flex items-center justify-center rounded-xl border border-[#E03A3E] bg-[#E03A3E] px-3 sm:px-4 py-1.5 sm:py-2 text-xs sm:text-sm font-medium text-white shadow-sm hover:bg-[#B71C1C] hover:border-[#B71C1C] transition disabled:opacity-50 disabled:cursor-not-allowed";
+  const secondaryButton =
+    "inline-flex items-center justify-center rounded-xl border border-[#2A2E32] bg-[#181B1F] px-3 sm:px-4 py-1.5 sm:py-2 text-xs sm:text-sm font-medium text-slate-200 shadow-sm hover:bg-[#20242A] hover:border-[#E03A3E] transition disabled:opacity-50 disabled:cursor-not-allowed";
+
+  if (!doc) {
+    return (
+      <div className="min-h-screen bg-[#050608] text-slate-100 px-4 py-8 grid place-items-center">
+        <div className="rounded-2xl border border-[#2A2E32] bg-[#121418] px-6 py-4 text-sm text-slate-300 shadow-sm">
+          Loading session…
+        </div>
+      </div>
+    );
+  }
 
   // ---- UI ------------------------------------------------------------------
 
   return (
-    <div className="relative px-4 py-8 mx-auto max-w-[1300px]">
-      {/* presence */}
-      <div className="absolute right-4 top-4 flex -space-x-2">
-        {viewers.slice(0, 5).map((v) => {
-          const initial = (v.name?.trim()?.[0] || "?").toUpperCase();
-          return (
-            <div
-              key={v.id}
-              title={v.name}
-              className="h-8 w-8 rounded-full bg-neutral-800 text-white border border-white/20 grid place-items-center text-xs"
-            >
-              {initial}
+    <div className="min-h-screen bg-[#050608] text-slate-100 px-4 py-8">
+      <div className="relative mx-auto max-w-[1300px]">
+        {/* presence */}
+        <div className="absolute right-0 top-0 flex -space-x-2">
+          {viewers.slice(0, 5).map((v) => {
+            const initial = (v.name?.trim()?.[0] || "?").toUpperCase();
+            return (
+              <div
+                key={v.id}
+                title={v.name}
+                className="h-8 w-8 rounded-full bg-[#181B1F] text-slate-100 border border-[#2A2E32] grid place-items-center text-xs"
+              >
+                {initial}
+              </div>
+            );
+          })}
+          {viewers.length > 5 && (
+            <div className="h-8 w-8 rounded-full bg-[#181B1F] text-slate-100 border border-[#2A2E32] grid place-items-center text-xs">
+              +{viewers.length - 5}
             </div>
-          );
-        })}
-        {viewers.length > 5 && (
-          <div className="h-8 w-8 rounded-full bg-neutral-700 text-white border border-white/20 grid place-items-center text-xs">
-            +{viewers.length - 5}
+          )}
+        </div>
+
+        {/* header */}
+        <header className="mb-6">
+          <h1 className="text-2xl font-bold mb-1 tracking-tight text-[#F5F5F5]">
+            <span className="mr-2 inline-block border-l-4 border-[#E03A3E] pl-2 uppercase text-[10px] tracking-[0.2em] text-slate-400">
+              Apex Legends
+            </span>
+            <span className="block text-2xl sm:text-3xl text-[#E03A3E]">
+              Session Viewer (Live)
+            </span>
+          </h1>
+          <p className="text-[11px] sm:text-xs text-slate-500 mt-1">
+            Viewing a live synced trio session. Stats auto-update as the host plays.
+          </p>
+          <p className="text-[11px] text-slate-500 mt-1">
+            {lastUpdated
+              ? `Last updated ${lastUpdated.toLocaleTimeString()}`
+              : "Waiting for first update…"}
+          </p>
+        </header>
+
+        {/* KPI cards */}
+        <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="rounded-2xl border border-[#2A2E32] bg-[#121418] p-4 shadow-sm">
+            <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500 mb-1">
+              Players
+            </div>
+            <div className="text-xl font-semibold text-slate-100">{players.length}</div>
           </div>
-        )}
-      </div>
-
-      <h1 className="text-2xl font-bold mb-1">Apex Session (Live)</h1>
-      <p className="text-xs text-neutral-500 mb-4">
-        {lastUpdated ? `Last updated ${lastUpdated.toLocaleTimeString()}` : "—"}
-      </p>
-
-      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
-          <div className="text-xs text-neutral-500 mb-1">Players</div>
-          <div className="text-xl font-semibold">{players.length}</div>
-        </div>
-        <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
-          <div className="text-xs text-neutral-500 mb-1">Session Games</div>
-          <div className="text-xl font-semibold">{doc.sessionGames}</div>
-        </div>
-        <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
-          <div className="text-xs text-neutral-500 mb-1">Total RP / Wins</div>
-          <div className="text-xl font-semibold">
-            {doc.totalRP} / {doc.wins}
+          <div className="rounded-2xl border border-[#2A2E32] bg-[#121418] p-4 shadow-sm">
+            <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500 mb-1">
+              Session Games
+            </div>
+            <div className="text-xl font-semibold text-slate-100">{doc.sessionGames}</div>
+          </div>
+          <div className="rounded-2xl border border-[#2A2E32] bg-gradient-to-br from-[#181B1F] via-[#1F2228] to-[#3A0F13] p-4 shadow-sm">
+            <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400 mb-1">
+              Total RP / Wins
+            </div>
+            <div className="text-xl font-semibold">
+              <span className="text-[#E03A3E]">{doc.totalRP}</span>
+              <span className="mx-1 text-slate-500">/</span>
+              <span className="text-[#C9A86A]">{doc.wins}</span>
+            </div>
+          </div>
+          <div className="rounded-2xl border border-[#2A2E32] bg-[#121418] p-4 shadow-sm">
+            <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500 mb-1">
+              Squad Totals
+            </div>
+            <div className="text-sm text-slate-200">
+              DMG: <span className="font-semibold text-[#C9A86A]">{totalDamage}</span>{" "}
+              <span className="mx-1 text-slate-500">·</span>
+              K: <span className="font-semibold text-slate-100">{totalKills}</span>
+            </div>
           </div>
         </div>
-        <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
-          <div className="text-xs text-neutral-500 mb-1">Totals</div>
-          <div className="text-sm">DMG: {totalDamage} · K: {totalKills}</div>
-        </div>
-      </div>
 
-      <div className="overflow-x-auto rounded-2xl border border-neutral-200 bg-white shadow-sm">
-        <table className="w-full text-left text-sm">
-          <thead className="bg-neutral-50 text-neutral-600">
-            <tr>
-              <th className="px-4 py-3">Name</th>
-              <th className="px-4 py-3">Games</th>
-              <th className="px-4 py-3">Total Damage</th>
-              <th className="px-4 py-3">Total Kills</th>
-              <th className="px-4 py-3">1k</th>
-              <th className="px-4 py-3">2k</th>
-            </tr>
-          </thead>
-          <tbody>
-            {players.map((p) => (
-              <tr key={p.id} className="border-t border-neutral-100">
-                <td className="px-4 py-3">{p.name || "—"}</td>
-                <td className="px-4 py-3">{p.games}</td>
-                <td className="px-4 py-3">{p.totalDamage}</td>
-                <td className="px-4 py-3">{p.totalKills}</td>
-                <td className="px-4 py-3">{p.oneKGames}</td>
-                <td className="px-4 py-3">{p.twoKGames}</td>
+        {/* Player table */}
+        <div className="overflow-x-auto rounded-2xl border border-[#2A2E32] bg-[#121418] shadow-sm">
+          <table className="w-full text-left text-xs sm:text-sm">
+            <thead className="bg-[#181B1F] text-slate-300 border-b border-[#2A2E32]">
+              <tr>
+                <th className="px-4 py-3 text-[11px] uppercase tracking-[0.16em]">Name</th>
+                <th className="px-4 py-3 text-[11px] uppercase tracking-[0.16em]">Games</th>
+                <th className="px-4 py-3 text-[11px] uppercase tracking-[0.16em]">
+                  Total Damage
+                </th>
+                <th className="px-4 py-3 text-[11px] uppercase tracking-[0.16em]">
+                  Total Kills
+                </th>
+                <th className="px-4 py-3 text-[11px] uppercase tracking-[0.16em]">1k</th>
+                <th className="px-4 py-3 text-[11px] uppercase tracking-[0.16em]">2k</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {players.map((p) => (
+                <tr
+                  key={p.id}
+                  className="border-t border-[#1D2026] odd:bg-[#101319] even:bg-[#121418] hover:bg-[#181B23] transition-colors"
+                >
+                  <td className="px-4 py-3 text-slate-100">{p.name || "—"}</td>
+                  <td className="px-4 py-3 text-slate-200">{p.games}</td>
+                  <td className="px-4 py-3 text-slate-200">{p.totalDamage}</td>
+                  <td className="px-4 py-3 text-slate-200">{p.totalKills}</td>
+                  <td className="px-4 py-3 text-slate-200">{p.oneKGames}</td>
+                  <td className="px-4 py-3 text-slate-200">{p.twoKGames}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
 
-      {/* Manual refresh */}
-      <div className="mt-3 flex items-center gap-3">
-        <button
-          onClick={onManualRefresh}
-          disabled={isRefreshing}
-          className="rounded-lg border px-3 py-1.5 text-sm shadow-sm disabled:opacity-60 cursor-pointer"
-        >
-          {isRefreshing ? "Refreshing..." : "Refresh data"}
-        </button>
-        {isRefreshing && (
-          <span className="text-xs text-neutral-500">Fetching latest from Supabase…</span>
-        )}
+        {/* Manual refresh */}
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <button
+            onClick={onManualRefresh}
+            disabled={isRefreshing}
+            className={secondaryButton}
+          >
+            {isRefreshing ? "Refreshing..." : "Refresh data"}
+          </button>
+          {isRefreshing && (
+            <span className="text-[11px] text-slate-500">
+              Fetching latest from Supabase…
+            </span>
+          )}
+          {!isRefreshing && (
+            <span className="text-[11px] text-slate-500">
+              Data also updates automatically in real time.
+            </span>
+          )}
+        </div>
       </div>
     </div>
   );

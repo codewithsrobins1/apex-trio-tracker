@@ -199,8 +199,11 @@ export default function ApexTrioTracker() {
 
     const url = `${window.location.origin}/s/${id}`;
     const ok = await copyToClipboard(url);
-    alert(ok ? `Live session link copied!\n${url}`
-            : `Couldn't copy automatically. Here it is:\n${url}`);
+    alert(
+      ok
+        ? `Live session link copied!\n${url}`
+        : `Couldn't copy automatically. Here it is:\n${url}`
+    );
   }, [currentDoc]);
 
   const saveTimer = useRef<number | undefined>(undefined);
@@ -217,22 +220,37 @@ export default function ApexTrioTracker() {
     return () => window.clearTimeout(saveTimer.current);
   }, [currentDoc, sessionId]);
 
+  // Small helper for button base styles
+  const primaryButton =
+    "inline-flex items-center justify-center rounded-xl border border-[#E03A3E] bg-[#E03A3E] px-4 py-2 text-xs sm:text-sm font-medium text-white shadow-sm hover:bg-[#B71C1C] hover:border-[#B71C1C] transition disabled:opacity-50 disabled:cursor-not-allowed";
+  const secondaryButton =
+    "inline-flex items-center justify-center rounded-xl border border-[#2A2E32] bg-[#181B1F] px-4 py-2 text-xs sm:text-sm font-medium text-slate-200 shadow-sm hover:bg-[#20242A] hover:border-[#E03A3E] transition disabled:opacity-50 disabled:cursor-not-allowed";
+
   // ===== UI =====
   return (
-    <main className="min-h-screen bg-neutral-50 text-neutral-900 px-4 py-8">
+    <main className="min-h-screen bg-[#050608] text-slate-100 px-4 py-8">
       <div className="mx-auto max-w-[1300px]">
-        <header className="mb-6 flex items-end justify-between gap-4">
+        <header className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight">Apex Stats – Trio Tracker</h1>
-            <p className="text-sm text-neutral-500">
-              Use the Data Entry panel to input each player's stats, then click <em>Add Game (All Rows)</em>. RP & Wins are tracked for the whole squad.
+            <h1 className="text-2xl font-bold tracking-tight text-[#F5F5F5]">
+              <span className="mr-2 inline-block border-l-4 border-[#E03A3E] pl-2 uppercase text-xs tracking-[0.2em] text-slate-400">
+                Apex Legends
+              </span>
+              <span className="block text-2xl sm:text-3xl text-[#E03A3E]">
+                Trio Session Tracker
+              </span>
+            </h1>
+            <p className="mt-2 text-xs sm:text-sm text-slate-400">
+              Use the Data Entry panel to input each player's stats, then hit{" "}
+              <span className="font-semibold text-slate-200">Add Game (All Rows)</span>. RP & Wins
+              track your whole squad's ranked grind.
             </p>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
             <button
               onClick={addPlayer}
               disabled={players.length >= MAX_PLAYERS}
-              className="rounded-2xl px-4 py-2 shadow-sm border border-neutral-200 disabled:opacity-50 disabled:cursor-not-allowed hover:shadow transition"
+              className={secondaryButton}
               title={players.length >= MAX_PLAYERS ? "Max 3 players" : "Add another player"}
             >
               + Add Player
@@ -247,23 +265,23 @@ export default function ApexTrioTracker() {
                 setWins(0);
                 setWinsHistory([]);
               }}
-              className="rounded-2xl px-4 py-2 shadow-sm border border-neutral-200 hover:shadow transition"
+              className={secondaryButton}
               title="Reset to a single empty row and clear session"
             >
               New Session
             </button>
 
             <button
-              className="rounded-2xl px-4 py-2 shadow-sm border border-neutral-200 hover:shadow transition"
-               onClick={async () => {
-                  try {
-                    await createSession();
-                  } catch (err) {
-                    console.error(err);
-                    const msg = err instanceof Error ? err.message : String(err);
-                    alert(`Failed to create session. ${msg ? `Details: ${msg}` : ""}`);
-                  }
-                }}
+              className={primaryButton}
+              onClick={async () => {
+                try {
+                  await createSession();
+                } catch (err) {
+                  console.error(err);
+                  const msg = err instanceof Error ? err.message : String(err);
+                  alert(`Failed to create session. ${msg ? `Details: ${msg}` : ""}`);
+                }
+              }}
             >
               Share Live Link
             </button>
@@ -272,42 +290,68 @@ export default function ApexTrioTracker() {
 
         {/* KPI cards */}
         <section className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-5">
-          <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
-            <div className="text-xs uppercase tracking-wide text-neutral-500 mb-1">Players</div>
-            <div className="text-xl font-semibold">{players.length}</div>
+          <div className="rounded-2xl border border-[#2A2E32] bg-[#121418] p-4 shadow-sm">
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">
+              Players
+            </div>
+            <div className="text-xl font-semibold text-slate-100">{players.length}</div>
           </div>
-          <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
-            <div className="text-xs uppercase tracking-wide text-neutral-500 mb-1">Session Games</div>
-            <div className="text-xl font-semibold">{sessionGames}</div>
+          <div className="rounded-2xl border border-[#2A2E32] bg-[#121418] p-4 shadow-sm">
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">
+              Session Games
+            </div>
+            <div className="text-xl font-semibold text-slate-100">{sessionGames}</div>
           </div>
-          <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
-            <div className="text-xs uppercase tracking-wide text-neutral-500 mb-1">Group Avg Damage</div>
-            <div className="text-xl font-semibold">{groupAvgDamage.toFixed(0)}</div>
+          <div className="rounded-2xl border border-[#2A2E32] bg-[#121418] p-4 shadow-sm">
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">
+              Group Avg Damage
+            </div>
+            <div className="text-xl font-semibold text-[#C9A86A]">
+              {groupAvgDamage.toFixed(0)}
+            </div>
           </div>
-          <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
-            <div className="text-xs uppercase tracking-wide text-neutral-500 mb-1">Group Avg Kills</div>
-            <div className="text-xl font-semibold">{groupAvgKills.toFixed(1)}</div>
+          <div className="rounded-2xl border border-[#2A2E32] bg-[#121418] p-4 shadow-sm">
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">
+              Group Avg Kills
+            </div>
+            <div className="text-xl font-semibold text-[#C9A86A]">
+              {groupAvgKills.toFixed(1)}
+            </div>
           </div>
-          <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
-            <div className="text-xs uppercase tracking-wide text-neutral-500 mb-1">Total RP / Wins</div>
-            <div className="text-xl font-semibold">{totalRP} / {wins}</div>
+          <div className="rounded-2xl border border-[#2A2E32] bg-gradient-to-br from-[#181B1F] via-[#1F2228] to-[#3A0F13] p-4 shadow-sm">
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400">
+              Total RP / Wins
+            </div>
+            <div className="text-xl font-semibold">
+              <span className="text-[#E03A3E]">{totalRP}</span>
+              <span className="mx-1 text-slate-500">/</span>
+              <span className="text-slate-100">{wins}</span>
+            </div>
           </div>
         </section>
 
         {/* Data Entry */}
-        <section className="mb-4 rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
-          <h2 className="mb-3 text-sm font-semibold text-neutral-700">Data Entry</h2>
+        <section className="mb-4 rounded-2xl border border-[#2A2E32] bg-[#121418] p-4 shadow-sm">
+          <h2 className="mb-3 text-xs sm:text-sm font-semibold text-slate-200 flex items-center gap-2">
+            <span className="h-3 w-1 rounded-sm bg-[#E03A3E]" />
+            Data Entry
+          </h2>
           <div className="grid gap-3">
             {players.map((p, idx) => (
-              <div key={p.id} className="grid grid-cols-1 gap-2 sm:grid-cols-12 items-center">
-                <div className="sm:col-span-1 text-neutral-500">#{idx + 1}</div>
+              <div
+                key={p.id}
+                className="grid grid-cols-1 items-center gap-2 rounded-xl bg-[#181B1F]/60 px-3 py-2 sm:grid-cols-12"
+              >
+                <div className="text-xs font-semibold text-slate-500 sm:col-span-1">
+                  #{idx + 1}
+                </div>
                 <div className="sm:col-span-3">
                   <input
                     type="text"
                     value={p.name}
                     onChange={(e) => updateField(p.id, "name", e.target.value)}
                     placeholder="Player name"
-                    className="w-full rounded-xl border border-neutral-200 px-3 py-2 outline-none focus:ring-2 focus:ring-neutral-200"
+                    className="w-full rounded-xl border border-[#2A2E32] bg-[#0E1115] px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-[#E03A3E] focus:ring-1 focus:ring-[#E03A3E]"
                   />
                 </div>
                 <div className="sm:col-span-3">
@@ -318,7 +362,7 @@ export default function ApexTrioTracker() {
                     value={p.damageInput}
                     onChange={(e) => updateField(p.id, "damageInput", e.target.value)}
                     placeholder="Damage (e.g. 1200)"
-                    className="w-full rounded-xl border border-neutral-200 px-3 py-2 outline-none focus:ring-2 focus:ring-neutral-200"
+                    className="w-full rounded-xl border border-[#2A2E32] bg-[#0E1115] px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-[#E03A3E] focus:ring-1 focus:ring-[#E03A3E]"
                   />
                 </div>
                 <div className="sm:col-span-3">
@@ -329,14 +373,14 @@ export default function ApexTrioTracker() {
                     value={p.killsInput}
                     onChange={(e) => updateField(p.id, "killsInput", e.target.value)}
                     placeholder="Kills (e.g. 3)"
-                    className="w-full rounded-xl border border-neutral-200 px-3 py-2 outline-none focus:ring-2 focus:ring-neutral-200"
+                    className="w-full rounded-xl border border-[#2A2E32] bg-[#0E1115] px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-[#E03A3E] focus:ring-1 focus:ring-[#E03A3E]"
                   />
                 </div>
-                <div className="sm:col-span-2">
+                <div className="sm:col-span-2 flex justify-end">
                   {players.length > 1 && (
                     <button
                       onClick={() => removePlayer(p.id)}
-                      className="w-full rounded-xl border border-neutral-200 px-2 py-2 text-xs text-neutral-600 hover:shadow-sm"
+                      className="w-full rounded-xl border border-[#2A2E32] bg-[#181B1F] px-2 py-2 text-xs text-slate-300 hover:border-[#E03A3E] hover:bg-[#20242A] hover:text-white shadow-sm"
                       title="Remove player"
                     >
                       Remove
@@ -350,14 +394,14 @@ export default function ApexTrioTracker() {
           <div className="mt-4 flex flex-wrap items-center gap-2">
             <button
               onClick={addGameAll}
-              className="rounded-xl border border-neutral-200 px-4 py-2 text-sm text-neutral-700 hover:shadow-sm"
+              className={primaryButton}
               title="Commit current inputs for all players as one game"
             >
               Add Game (All Rows) ▶
             </button>
             <button
               onClick={undoGameAll}
-              className="rounded-xl border border-neutral-200 px-4 py-2 text-sm text-neutral-700 hover:shadow-sm disabled:opacity-50"
+              className={secondaryButton}
               disabled={gameHistory.length === 0}
               title="Undo the last added game for all players"
             >
@@ -367,14 +411,19 @@ export default function ApexTrioTracker() {
         </section>
 
         {/* RP & Wins Controls */}
-        <section className="mb-4 rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
+        <section className="mb-4 rounded-2xl border border-[#2A2E32] bg-[#121418] p-4 shadow-sm">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <div className="text-sm font-medium">
-                Ranked Points (RP) — Session Total: <span className="font-semibold">{totalRP}</span>
-                <span className="ml-3">Wins: <span className="font-semibold">{wins}</span></span>
+              <div className="text-xs sm:text-sm font-medium text-slate-200">
+                Ranked Points (RP) — Session Total:{" "}
+                <span className="font-semibold text-[#E03A3E]">{totalRP}</span>
+                <span className="ml-3">
+                  Wins: <span className="font-semibold text-[#C9A86A]">{wins}</span>
+                </span>
               </div>
-              <p className="text-xs text-neutral-500">Enter RP change per match (can be negative). Use buttons to track wins.</p>
+              <p className="text-[11px] text-slate-500 mt-1">
+                Enter RP change per match (can be negative). Use buttons to track wins.
+              </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <input
@@ -385,36 +434,36 @@ export default function ApexTrioTracker() {
                   if (e.key === "Enter") commitRP();
                 }}
                 placeholder="e.g. 45 or -23"
-                className="w-40 rounded-xl border border-neutral-200 px-3 py-2 outline-none focus:ring-2 focus:ring-neutral-200"
+                className="w-40 rounded-xl border border-[#2A2E32] bg-[#0E1115] px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-[#E03A3E] focus:ring-1 focus:ring-[#E03A3E]"
               />
               <button
                 onClick={commitRP}
-                className="rounded-xl border border-neutral-200 px-3 py-2 text-xs text-neutral-700 hover:shadow-sm"
+                className={primaryButton}
                 title="Add this RP delta to session total"
               >
                 Add RP ▶
               </button>
               <button
                 onClick={undoRP}
-                className="rounded-xl border border-neutral-200 px-3 py-2 text-xs text-neutral-700 hover:shadow-sm disabled:opacity-50"
+                className={secondaryButton}
                 disabled={rpHistory.length === 0}
                 title="Undo last RP add"
               >
                 ◀ Undo RP
               </button>
 
-              <div className="mx-2 h-6 w-px bg-neutral-200" />
+              <div className="mx-2 h-6 w-px bg-[#2A2E32]" />
 
               <button
                 onClick={addWin}
-                className="rounded-xl border border-neutral-200 px-3 py-2 text-xs text-neutral-700 hover:shadow-sm"
+                className={primaryButton}
                 title="Increment wins"
               >
                 +1 Win
               </button>
               <button
                 onClick={undoWin}
-                className="rounded-xl border border-neutral-200 px-3 py-2 text-xs text-neutral-700 hover:shadow-sm disabled:opacity-50"
+                className={secondaryButton}
                 disabled={winsHistory.length === 0}
                 title="Undo last win"
               >
@@ -425,41 +474,66 @@ export default function ApexTrioTracker() {
         </section>
 
         {/* Player Stats table */}
-        <div className="overflow-x-auto rounded-2xl border border-neutral-200 bg-white shadow-sm">
-          <table className="w-full text-left text-sm">
-            <thead className="bg-neutral-50 text-neutral-600">
+        <div className="overflow-x-auto rounded-2xl border border-[#2A2E32] bg-[#121418] shadow-sm">
+          <table className="w-full text-left text-xs sm:text-sm">
+            <thead className="bg-[#181B1F] text-slate-300 border-b border-[#2A2E32]">
               <tr>
-                <th className="px-4 py-3 w-[44px]">#</th>
-                <th className="px-4 py-3">Name</th>
-                <th className="px-4 py-3">Games</th>
-                <th className="px-4 py-3">Total Damage</th>
-                <th className="px-4 py-3">Total Kills</th>
-                <th className="px-4 py-3">1k Games</th>
-                <th className="px-4 py-3">2k Games</th>
-                <th className="px-4 py-3">Avg Damage</th>
-                <th className="px-4 py-3">Avg Kills</th>
-                <th className="px-4 py-3 w-[1%]"></th>
+                <th className="px-4 py-3 w-[44px] text-[11px] uppercase tracking-[0.16em]">
+                  #
+                </th>
+                <th className="px-4 py-3 text-[11px] uppercase tracking-[0.16em]">
+                  Name
+                </th>
+                <th className="px-4 py-3 text-[11px] uppercase tracking-[0.16em]">
+                  Games
+                </th>
+                <th className="px-4 py-3 text-[11px] uppercase tracking-[0.16em]">
+                  Total Damage
+                </th>
+                <th className="px-4 py-3 text-[11px] uppercase tracking-[0.16em]">
+                  Total Kills
+                </th>
+                <th className="px-4 py-3 text-[11px] uppercase tracking-[0.16em]">
+                  1k Games
+                </th>
+                <th className="px-4 py-3 text-[11px] uppercase tracking-[0.16em]">
+                  2k Games
+                </th>
+                <th className="px-4 py-3 text-[11px] uppercase tracking-[0.16em]">
+                  Avg Damage
+                </th>
+                <th className="px-4 py-3 text-[11px] uppercase tracking-[0.16em]">
+                  Avg Kills
+                </th>
+                <th className="px-4 py-3 w-[1%]" />
               </tr>
             </thead>
             <tbody>
               {players.map((p, idx) => {
                 const avgs = derived.find((d) => d.id === p.id)!;
                 return (
-                  <tr key={p.id} className="border-t border-neutral-100">
-                    <td className="px-4 py-3 text-neutral-500">{idx + 1}</td>
-                    <td className="px-4 py-3">{p.name || "—"}</td>
-                    <td className="px-4 py-3 text-neutral-700">{p.games}</td>
-                    <td className="px-4 py-3 text-neutral-700">{p.totalDamage}</td>
-                    <td className="px-4 py-3 text-neutral-700">{p.totalKills}</td>
-                    <td className="px-4 py-3 text-neutral-700">{p.oneKGames}</td>
-                    <td className="px-4 py-3 text-neutral-700">{p.twoKGames}</td>
-                    <td className="px-4 py-3 text-neutral-700">{avgs.avgDamage.toFixed(1)}</td>
-                    <td className="px-4 py-3 text-neutral-700">{avgs.avgKills.toFixed(1)}</td>
+                  <tr
+                    key={p.id}
+                    className="border-t border-[#1D2026] odd:bg-[#101319] even:bg-[#121418] hover:bg-[#181B23] transition-colors"
+                  >
+                    <td className="px-4 py-3 text-slate-500">{idx + 1}</td>
+                    <td className="px-4 py-3 text-slate-100">{p.name || "—"}</td>
+                    <td className="px-4 py-3 text-slate-200">{p.games}</td>
+                    <td className="px-4 py-3 text-slate-200">{p.totalDamage}</td>
+                    <td className="px-4 py-3 text-slate-200">{p.totalKills}</td>
+                    <td className="px-4 py-3 text-slate-200">{p.oneKGames}</td>
+                    <td className="px-4 py-3 text-slate-200">{p.twoKGames}</td>
+                    <td className="px-4 py-3 text-slate-200">
+                      {avgs.avgDamage.toFixed(1)}
+                    </td>
+                    <td className="px-4 py-3 text-slate-200">
+                      {avgs.avgKills.toFixed(1)}
+                    </td>
                     <td className="px-4 py-3">
                       {players.length > 1 && (
                         <button
                           onClick={() => removePlayer(p.id)}
-                          className="rounded-xl border border-neutral-200 px-2 py-1 text-xs text-neutral-600 hover:shadow-sm"
+                          className="rounded-xl border border-[#2A2E32] bg-[#181B1F] px-2 py-1 text-[11px] text-slate-300 hover:border-[#E03A3E] hover:bg-[#20242A] hover:text-white shadow-sm"
                           title="Remove player"
                         >
                           Remove
@@ -471,14 +545,24 @@ export default function ApexTrioTracker() {
               })}
             </tbody>
             <tfoot>
-              <tr className="border-t border-neutral-200 bg-neutral-50 font-semibold">
-                <td className="px-4 py-3 text-neutral-600">—</td>
-                <td className="px-4 py-3 text-neutral-600">Totals/Avg</td>
-                <td className="px-4 py-3">{players.reduce((acc, p) => acc + p.games, 0)}</td>
-                <td className="px-4 py-3">{players.reduce((acc, p) => acc + p.totalDamage, 0)}</td>
-                <td className="px-4 py-3">{players.reduce((acc, p) => acc + p.totalKills, 0)}</td>
-                <td className="px-4 py-3">{players.reduce((acc, p) => acc + p.oneKGames, 0)}</td>
-                <td className="px-4 py-3">{players.reduce((acc, p) => acc + p.twoKGames, 0)}</td>
+              <tr className="border-t border-[#2A2E32] bg-[#181B1F] font-semibold text-slate-100">
+                <td className="px-4 py-3 text-slate-500">—</td>
+                <td className="px-4 py-3 text-slate-300">Totals / Avg</td>
+                <td className="px-4 py-3">
+                  {players.reduce((acc, p) => acc + p.games, 0)}
+                </td>
+                <td className="px-4 py-3">
+                  {players.reduce((acc, p) => acc + p.totalDamage, 0)}
+                </td>
+                <td className="px-4 py-3">
+                  {players.reduce((acc, p) => acc + p.totalKills, 0)}
+                </td>
+                <td className="px-4 py-3">
+                  {players.reduce((acc, p) => acc + p.oneKGames, 0)}
+                </td>
+                <td className="px-4 py-3">
+                  {players.reduce((acc, p) => acc + p.twoKGames, 0)}
+                </td>
                 <td className="px-4 py-3">{groupAvgDamage.toFixed(1)}</td>
                 <td className="px-4 py-3">{groupAvgKills.toFixed(2)}</td>
                 <td className="px-4 py-3" />
@@ -487,11 +571,13 @@ export default function ApexTrioTracker() {
           </table>
         </div>
 
-        <p className="mt-3 text-xs text-neutral-500">
-          Workflows: Enter stats for everyone → <em>Add Game (All Rows)</em> to record a match. Use Undo to revert last frame. RP supports negatives; Wins increments by one.
+        <p className="mt-3 text-[11px] text-slate-500">
+          Workflows: Enter stats for everyone →{" "}
+          <span className="font-semibold text-slate-200">Add Game (All Rows)</span> to record a
+          match. Use Undo to revert last frame. RP supports negatives; Wins increments by one.
         </p>
 
-        <div className="mt-6 flex items-center gap-3">
+        <div className="mt-6 flex flex-wrap items-center gap-3">
           <button
             onClick={async () => {
               const lines: string[] = [];
@@ -503,11 +589,19 @@ export default function ApexTrioTracker() {
                 const avgD = p.games > 0 ? (p.totalDamage / p.games).toFixed(0) : "0";
                 const avgK = p.games > 0 ? (p.totalKills / p.games).toFixed(1) : "0.0";
                 lines.push(
-                  `#${i + 1} ${p.name || "(no name)"} — Games: ${p.games}, Total Dmg: ${p.totalDamage}, Total K: ${p.totalKills}, 1k: ${p.oneKGames}, 2k: ${p.twoKGames}, Avg Dmg: ${avgD}, Avg K: ${avgK}`
+                  `#${i + 1} ${p.name || "(no name)"} — Games: ${p.games}, Total Dmg: ${
+                    p.totalDamage
+                  }, Total K: ${p.totalKills}, 1k: ${
+                    p.oneKGames
+                  }, 2k: ${p.twoKGames}, Avg Dmg: ${avgD}, Avg K: ${avgK}`
                 );
               });
               lines.push("");
-              lines.push(`Group Avg — Damage: ${groupAvgDamage.toFixed(0)}, Kills: ${groupAvgKills.toFixed(1)}, Total RP: ${totalRP}, Wins: ${wins}`);
+              lines.push(
+                `Group Avg — Damage: ${groupAvgDamage.toFixed(
+                  0
+                )}, Kills: ${groupAvgKills.toFixed(1)}, Total RP: ${totalRP}, Wins: ${wins}`
+              );
 
               const content = lines.join("\n");
               try {
@@ -521,15 +615,18 @@ export default function ApexTrioTracker() {
               } catch (err: unknown) {
                 console.error(err);
                 const msg = err instanceof Error ? err.message : String(err);
-                alert(`Failed to post to Discord. ${msg ? `Details: ${msg}` : "Check server logs & .env."} ❌`);
+                alert(
+                  `Failed to post to Discord. ${
+                    msg ? `Details: ${msg}` : "Check server logs & .env."
+                  } ❌`
+                );
               }
             }}
-            className="rounded-2xl border border-neutral-200 px-4 py-2 text-sm hover:shadow transition"
+            className={secondaryButton}
             title="Send the current session summary to your Discord channel"
           >
             Post Session to Discord
           </button>
-          <span className="text-xs text-neutral-500">Configure /api/discord (Discord webhook URL in .env.local)</span>
         </div>
       </div>
     </main>
