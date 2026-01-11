@@ -40,6 +40,7 @@ export default function ApexTrioTracker() {
   const [players, setPlayers] = useState<Player[]>([makeNewPlayer()]);
   const [sessionGames, setSessionGames] = useState<number>(0);
   const [gameHistory, setGameHistory] = useState<GameFrame[]>([]); // for global undo
+  const [showConfirm, setShowConfirm] = useState(false)
 
   // RP (group-wide)
   const [rpInput, setRpInput] = useState<string>("");
@@ -220,15 +221,58 @@ export default function ApexTrioTracker() {
     return () => window.clearTimeout(saveTimer.current);
   }, [currentDoc, sessionId]);
 
+  const resetLocalSession = () => {
+    setPlayers([makeNewPlayer()]);
+    setSessionGames(0);
+    setGameHistory([]);
+    setTotalRP(0);
+    setRpHistory([]);
+    setWins(0);
+    setWinsHistory([]);
+  };
+
   // Small helper for button base styles
   const primaryButton =
     "inline-flex items-center justify-center rounded-xl border border-[#E03A3E] bg-[#E03A3E] px-4 py-2 text-xs sm:text-sm font-medium text-white shadow-sm hover:bg-[#B71C1C] hover:border-[#B71C1C] transition disabled:opacity-50 disabled:cursor-not-allowed";
   const secondaryButton =
-    "inline-flex items-center justify-center rounded-xl border border-[#2A2E32] bg-[#181B1F] px-4 py-2 text-xs sm:text-sm font-medium text-slate-200 shadow-sm hover:bg-[#20242A] hover:border-[#E03A3E] transition disabled:opacity-50 disabled:cursor-not-allowed";
+    "inline-flex items-center justify-center rounded-xl border border-[#2A2E32] bg-[#181B1F] px-4 py-2 text-xs sm:text-sm font-medium text-slate-200 shadow-sm hover:bg-[#20242A] hover:border-[#E03A3E] transition disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer";
 
   // ===== UI =====
   return (
     <main className="min-h-screen bg-[#050608] text-slate-100 px-4 py-8">
+      {showConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="w-full max-w-sm rounded-lg bg-neutral-900 p-6 shadow-lg">
+            <h2 className="text-lg font-semibold text-white">
+              Start a new session?
+            </h2>
+
+            <p className="mt-2 text-sm text-neutral-400">
+              Are you sure you want to create a new session? This will end the current one.
+            </p>
+
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                onClick={() => setShowConfirm(false)}
+                className="rounded-md px-4 py-2 text-sm text-neutral-300 hover:bg-neutral-800 cursor-pointer"
+              >
+                No
+              </button>
+
+              <button
+                onClick={() => {
+                  setShowConfirm(false)
+                  resetLocalSession();
+                }}
+                className="rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-500 cursor-pointer"
+              >
+                Yes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="mx-auto max-w-[1300px]">
         <header className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div>
@@ -256,17 +300,8 @@ export default function ApexTrioTracker() {
               + Add Player
             </button>
             <button
-              onClick={() => {
-                setPlayers([makeNewPlayer()]);
-                setSessionGames(0);
-                setGameHistory([]);
-                setTotalRP(0);
-                setRpHistory([]);
-                setWins(0);
-                setWinsHistory([]);
-              }}
+              onClick={() => setShowConfirm(true)}
               className={secondaryButton}
-              title="Reset to a single empty row and clear session"
             >
               New Session
             </button>
