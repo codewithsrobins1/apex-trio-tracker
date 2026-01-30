@@ -3,7 +3,7 @@
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/supabaseServer";
+import { supabaseAdmin } from "@/lib/supabase/supabaseServer";
 
 // If you're on Next.js 15, params is a Promise; if you're on 14, remove the `await` and use plain { params: { id: string } }.
 type Ctx = { params: Promise<{ id: string }> };

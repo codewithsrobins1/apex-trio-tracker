@@ -1,7 +1,18 @@
 // NO "use client" here
 import SessionViewerClient from "./SessionViewerClient";
 
-export default async function Page({ params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params; // Next 15: await params
-  return <SessionViewerClient id={id} />;
+export default async function Page({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams?: Promise<{ season?: string }>;
+}) {
+  const { id } = await params;
+
+  // /s/[id]?season=xxxx
+  const sp = (await searchParams) ?? {};
+  const seasonId = sp.season ?? null;
+
+  return <SessionViewerClient id={id} seasonId={seasonId} />;
 }

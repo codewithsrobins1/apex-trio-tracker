@@ -1,668 +1,208 @@
-/* eslint-disable react/no-unescaped-entities */
-/* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
-import { copyToClipboard } from "@/helpers/copyToClipboard";
-import { useMemo, useState, useEffect, useRef, useCallback } from "react";
+import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { fetchMyProfile, upsertProfile, type Profile } from "@/lib/auth/usernameAuth";
+import { supabase } from "@/lib/supabase/client";
 
-export default function ApexTrioTracker() {
-  // ===== Types =====
-  type GameEntry = { damage: number; kills: number };
-  type Player = {
-    id: string;
-    name: string;
-    damageInput: string;
-    killsInput: string;
-    games: number; // increments with global Add Game
-    totalDamage: number;
-    totalKills: number;
-    oneKGames: number; // damage >= 1000
-    twoKGames: number; // damage >= 2000
-    history: GameEntry[];
-  };
-  type GameFrame = { entries: { id: string; entry: GameEntry }[] };
+function useIsMobile(breakpointPx = 768) {
+  const [isMobile, setIsMobile] = useState(false);
 
-  // ===== Helpers =====
-  const makeNewPlayer = (): Player => ({
-    id: crypto.randomUUID(),
-    name: "",
-    damageInput: "",
-    killsInput: "",
-    games: 0,
-    totalDamage: 0,
-    totalKills: 0,
-    oneKGames: 0,
-    twoKGames: 0,
-    history: [],
-  });
-
-  // ===== State =====
-  const [players, setPlayers] = useState<Player[]>([makeNewPlayer()]);
-  const [sessionGames, setSessionGames] = useState<number>(0);
-  const [gameHistory, setGameHistory] = useState<GameFrame[]>([]); // for global undo
-  const [showConfirm, setShowConfirm] = useState(false)
-
-  // RP (group-wide)
-  const [rpInput, setRpInput] = useState<string>("");
-  const [totalRP, setTotalRP] = useState<number>(0);
-  const [rpHistory, setRpHistory] = useState<number[]>([]);
-
-  // Wins (group-wide)
-  const [wins, setWins] = useState<number>(0);
-  const [winsHistory, setWinsHistory] = useState<number[]>([]);
-
-  // Live session id (when present, host pushes updates)
-  const [sessionId, setSessionId] = useState<string | null>(null);
-
-  const MAX_PLAYERS = 3;
-
-  // ===== Player mgmt =====
-  const addPlayer = () => {
-    if (players.length >= MAX_PLAYERS) return;
-    setPlayers((p) => [...p, makeNewPlayer()]);
-  };
-  const removePlayer = (id: string) => setPlayers((p) => p.filter((pl) => pl.id !== id));
-  const updateField = <K extends keyof Player>(id: string, field: K, value: Player[K]) => {
-    setPlayers((prev) => prev.map((pl) => (pl.id === id ? { ...pl, [field]: value } : pl)));
-  };
-
-  // ===== Global Add / Undo =====
-  const addGameAll = () => {
-    const anyProvided = players.some((p) => (p.damageInput ?? "") !== "" || (p.killsInput ?? "") !== "");
-    if (!anyProvided) return;
-
-    const frame: GameFrame = { entries: [] };
-    setPlayers((prev) =>
-      prev.map((pl) => {
-        const dmgN = Number(pl.damageInput);
-        const kN = Number(pl.killsInput);
-        const dmg = Number.isFinite(dmgN) && dmgN >= 0 ? dmgN : 0;
-        const k = Number.isFinite(kN) && kN >= 0 ? kN : 0;
-        frame.entries.push({ id: pl.id, entry: { damage: dmg, kills: k } });
-        return {
-          ...pl,
-          games: pl.games + 1,
-          totalDamage: pl.totalDamage + dmg,
-          totalKills: pl.totalKills + k,
-          oneKGames: pl.oneKGames + (dmg >= 1000 ? 1 : 0),
-          twoKGames: pl.twoKGames + (dmg >= 2000 ? 1 : 0),
-          damageInput: "",
-          killsInput: "",
-          history: [...pl.history, { damage: dmg, kills: k }],
-        };
-      })
-    );
-    setSessionGames((g) => g + 1);
-    setGameHistory((h) => [...h, frame]);
-  };
-
-  const undoGameAll = () => {
-    if (gameHistory.length === 0) return;
-    const last = gameHistory[gameHistory.length - 1];
-    setPlayers((prev) =>
-      prev.map((pl) => {
-        const rec = last.entries.find((e) => e.id === pl.id);
-        if (!rec) return pl;
-        const { damage, kills } = rec.entry;
-        return {
-          ...pl,
-          games: Math.max(0, pl.games - 1),
-          totalDamage: Math.max(0, pl.totalDamage - damage),
-          totalKills: Math.max(0, pl.totalKills - kills),
-          oneKGames: Math.max(0, pl.oneKGames - (damage >= 1000 ? 1 : 0)),
-          twoKGames: Math.max(0, pl.twoKGames - (damage >= 2000 ? 1 : 0)),
-          damageInput: String(damage || ""),
-          killsInput: String(kills || ""),
-          history: pl.history.slice(0, -1),
-        };
-      })
-    );
-    setSessionGames((g) => Math.max(0, g - 1));
-    setGameHistory((h) => h.slice(0, -1));
-  };
-
-  // ===== RP / Wins controls =====
-  const commitRP = () => {
-    const delta = Number(rpInput);
-    if (!Number.isFinite(delta) || rpInput === "") return;
-    setTotalRP((v) => v + delta);
-    setRpHistory((h) => [...h, delta]);
-    setRpInput("");
-  };
-  const undoRP = () => {
-    if (rpHistory.length === 0) return;
-    const last = rpHistory[rpHistory.length - 1];
-    setTotalRP((v) => v - last);
-    setRpHistory((h) => h.slice(0, -1));
-    setRpInput(String(last));
-  };
-
-  const addWin = () => {
-    setWins((w) => w + 1);
-    setWinsHistory((h) => [...h, 1]);
-  };
-  const undoWin = () => {
-    if (winsHistory.length === 0) return;
-    setWins((w) => Math.max(0, w - 1));
-    setWinsHistory((h) => h.slice(0, -1));
-  };
-
-  // ===== Derived =====
-  const derived = useMemo(
-    () =>
-      players.map((p) => ({
-        id: p.id,
-        avgDamage: p.games > 0 ? p.totalDamage / p.games : 0,
-        avgKills: p.games > 0 ? p.totalKills / p.games : 0,
-      })),
-    [players]
-  );
-
-  const { groupAvgDamage, groupAvgKills } = useMemo(() => {
-    const withGames = players.filter((p) => p.games > 0);
-    if (withGames.length === 0) return { groupAvgDamage: 0, groupAvgKills: 0 };
-    const avgDamage = withGames.reduce((acc, p) => acc + p.totalDamage / p.games, 0) / withGames.length;
-    const avgKills = withGames.reduce((acc, p) => acc + p.totalKills / p.games, 0) / withGames.length;
-    return { groupAvgDamage: avgDamage, groupAvgKills: avgKills };
-  }, [players]);
-
-  // ===== Live-sync (host -> Supabase via API) =====
-  const currentDoc = {
-    players: players.map((p) => ({
-      id: p.id,
-      name: p.name,
-      games: p.games,
-      totalDamage: p.totalDamage,
-      totalKills: p.totalKills,
-      oneKGames: p.oneKGames,
-      twoKGames: p.twoKGames,
-    })),
-    sessionGames,
-    totalRP,
-    wins,
-  };
-
-  const createSession = useCallback(async () => {
-    const id = crypto.randomUUID();
-    setSessionId(id);
-
-    // Save current document to your API (which writes to Supabase)
-    const res = await fetch(`/api/session/${id}/save`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ doc: currentDoc }),
-    });
-
-    if (!res.ok) {
-      const t = await res.text().catch(() => "");
-      throw new Error(t || "Failed saving session");
-    }
-
-    const url = `${window.location.origin}/s/${id}`;
-    const ok = await copyToClipboard(url);
-    alert(
-      ok
-        ? `Live session link copied!\n${url}`
-        : `Couldn't copy automatically. Here it is:\n${url}`
-    );
-  }, [currentDoc]);
-
-  const saveTimer = useRef<number | undefined>(undefined);
   useEffect(() => {
-    if (!sessionId) return;
-    window.clearTimeout(saveTimer.current);
-    saveTimer.current = window.setTimeout(() => {
-      fetch(`/api/session/${sessionId}/save`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ doc: currentDoc }),
-      }).catch(() => {});
-    }, 400);
-    return () => window.clearTimeout(saveTimer.current);
-  }, [currentDoc, sessionId]);
+    const mq = window.matchMedia(`(max-width: ${breakpointPx}px)`);
+    const onChange = () => setIsMobile(mq.matches);
+    onChange();
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, [breakpointPx]);
 
-  const resetLocalSession = () => {
-    setPlayers([makeNewPlayer()]);
-    setSessionGames(0);
-    setGameHistory([]);
-    setTotalRP(0);
-    setRpHistory([]);
-    setWins(0);
-    setWinsHistory([]);
-  };
+  return isMobile;
+}
 
-  // Small helper for button base styles
-  const primaryButton =
-    "inline-flex items-center justify-center rounded-xl border border-[#E03A3E] bg-[#E03A3E] px-4 py-2 text-xs sm:text-sm font-medium text-white shadow-sm hover:bg-[#B71C1C] hover:border-[#B71C1C] transition disabled:opacity-50 disabled:cursor-not-allowed";
-  const secondaryButton =
-    "inline-flex items-center justify-center rounded-xl border border-[#2A2E32] bg-[#181B1F] px-4 py-2 text-xs sm:text-sm font-medium text-slate-200 shadow-sm hover:bg-[#20242A] hover:border-[#E03A3E] transition disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer";
+export default function HomePage() {
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  // ===== UI =====
+  const [name, setName] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const isMobile = useIsMobile();
+  const seasonDisabled = isMobile;
+
+  useEffect(() => {
+    let mounted = true;
+
+    (async () => {
+      try {
+        const p = await fetchMyProfile();
+        if (mounted) setProfile(p);
+      } catch (e: any) {
+        if (mounted) setErr(e?.message ?? "Failed to load profile");
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    })();
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const canSubmit = useMemo(() => name.trim().length >= 2 && !saving, [name, saving]);
+
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setErr(null);
+
+    try {
+      setSaving(true);
+      const p = await upsertProfile(name);
+      setProfile(p);
+    } catch (e: any) {
+      setErr(e?.message ?? "Failed to save username");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function onSwitchUser() {
+    setErr(null);
+    try {
+      // Signing out of anonymous auth gives a clean slate (new user id on next sign-in)
+      await supabase.auth.signOut();
+      setProfile(null);
+      setName("");
+    } catch (e: any) {
+      setErr(e?.message ?? "Failed to switch user");
+    }
+  }
+
+  if (loading) {
+    return (
+      <main className="min-h-screen bg-black text-white flex items-center justify-center">
+        <div className="opacity-70">Loading…</div>
+      </main>
+    );
+  }
+
   return (
-    <main className="min-h-screen bg-[#050608] text-slate-100 px-4 py-8">
-      {showConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="w-full max-w-sm rounded-lg bg-neutral-900 p-6 shadow-lg">
-            <h2 className="text-lg font-semibold text-white">
-              Start a new session?
-            </h2>
+    <main className="min-h-screen bg-black text-white">
+      <div className="max-w-6xl mx-auto px-6 py-20">
+        {/* HERO */}
+        <div className="text-center">
+          <div className="uppercase tracking-[0.3em] text-xs text-white/60">Apex Legends</div>
+          <h1 className="mt-4 text-5xl md:text-6xl font-bold text-red-500">Apex Trio Tracker</h1>
 
-            <p className="mt-2 text-sm text-neutral-400">
-              Are you sure you want to create a new session? This will end the current one.
+          {!profile ? (
+            <p className="mt-4 text-white/70">
+              Track your ranked RP progression over time and session performance with your trio.
             </p>
-
-            <div className="mt-6 flex justify-end gap-3">
+          ) : (
+            <>
+              <div className="mt-6 text-lg text-white/80">
+                Welcome back, <span className="font-semibold text-white">{profile.display_name}</span>
+              </div>
               <button
-                onClick={() => setShowConfirm(false)}
-                className="rounded-md px-4 py-2 text-sm text-neutral-300 hover:bg-neutral-800 cursor-pointer"
+                onClick={onSwitchUser}
+                className="mt-2 text-sm text-white/60 underline hover:text-white/80"
               >
-                No
+                Switch User
               </button>
-
-              <button
-                onClick={() => {
-                  setShowConfirm(false)
-                  resetLocalSession();
-                }}
-                className="rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-500 cursor-pointer"
-              >
-                Yes
-              </button>
-            </div>
-          </div>
+            </>
+          )}
         </div>
-      )}
 
-      <div className="mx-auto max-w-[1300px]">
-        <header className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight text-[#F5F5F5]">
-              <span className="mr-2 inline-block border-l-4 border-[#E03A3E] pl-2 uppercase text-xs tracking-[0.2em] text-slate-400">
-                Apex Legends
-              </span>
-              <span className="block text-2xl sm:text-3xl text-[#E03A3E]">
-                Trio Session Tracker
-              </span>
-            </h1>
-            <p className="mt-2 text-xs sm:text-sm text-slate-400">
-              Use the Data Entry panel to input each player's stats, then hit{" "}
-              <span className="font-semibold text-slate-200">Add Game (All Rows)</span>. RP & Wins
-              track your whole squad's ranked grind.
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-            <button
-              onClick={addPlayer}
-              disabled={players.length >= MAX_PLAYERS}
-              className={secondaryButton}
-              title={players.length >= MAX_PLAYERS ? "Max 3 players" : "Add another player"}
-            >
-              + Add Player
-            </button>
-            <button
-              onClick={() => setShowConfirm(true)}
-              className={secondaryButton}
-            >
-              New Session
-            </button>
+        {/* CONTENT */}
+        <div className="mt-16 flex justify-center">
+          <div className="w-full max-w-5xl">
+            {!profile ? (
+              // SIGN-IN CARD
+              <div className="mx-auto w-full max-w-lg rounded-2xl border border-white/10 bg-white/5 p-6 shadow">
+                <div className="text-lg font-semibold">Enter Username</div>
+                <div className="mt-1 text-sm text-white/70">No email. Just a name to attribute your RP.</div>
 
-            <button
-              className={primaryButton}
-              onClick={async () => {
-                try {
-                  await createSession();
-                } catch (err) {
-                  console.error(err);
-                  const msg = err instanceof Error ? err.message : String(err);
-                  alert(`Failed to create session. ${msg ? `Details: ${msg}` : ""}`);
-                }
-              }}
-            >
-              Share Live Link
-            </button>
-          </div>
-        </header>
+                <form className="mt-5 space-y-3" onSubmit={onSubmit}>
+                  <label className="block">
+                    <div className="text-sm text-white/70 mb-2">Username</div>
+                    <input
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      placeholder="YourGamertag"
+                      className="w-full rounded-xl bg-black/40 border border-white/10 px-4 py-3 outline-none focus:border-white/30"
+                      maxLength={24}
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                  </label>
 
-        {/* KPI cards */}
-        <section className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-5">
-          <div className="rounded-2xl border border-[#2A2E32] bg-[#121418] p-4 shadow-sm">
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">
-              Players
-            </div>
-            <div className="text-xl font-semibold text-slate-100">{players.length}</div>
-          </div>
-          <div className="rounded-2xl border border-[#2A2E32] bg-[#121418] p-4 shadow-sm">
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">
-              Session Games
-            </div>
-            <div className="text-xl font-semibold text-slate-100">{sessionGames}</div>
-          </div>
-          <div className="rounded-2xl border border-[#2A2E32] bg-[#121418] p-4 shadow-sm">
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">
-              Group Avg Damage
-            </div>
-            <div className="text-xl font-semibold text-[#C9A86A]">
-              {groupAvgDamage.toFixed(0)}
-            </div>
-          </div>
-          <div className="rounded-2xl border border-[#2A2E32] bg-[#121418] p-4 shadow-sm">
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">
-              Group Avg Kills
-            </div>
-            <div className="text-xl font-semibold text-[#C9A86A]">
-              {groupAvgKills.toFixed(1)}
-            </div>
-          </div>
-          <div className="rounded-2xl border border-[#2A2E32] bg-gradient-to-br from-[#181B1F] via-[#1F2228] to-[#3A0F13] p-4 shadow-sm">
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400">
-              Total RP / Wins
-            </div>
-            <div className="text-xl font-semibold">
-              <span className="text-[#E03A3E]">{totalRP}</span>
-              <span className="mx-1 text-slate-500">/</span>
-              <span className="text-slate-100">{wins}</span>
-            </div>
-          </div>
-        </section>
+                  {err && <div className="text-sm text-red-400">{err}</div>}
 
-        {/* Data Entry */}
-        <section className="mb-4 rounded-2xl border border-[#2A2E32] bg-[#121418] p-4 shadow-sm">
-          <h2 className="mb-3 text-xs sm:text-sm font-semibold text-slate-200 flex items-center gap-2">
-            <span className="h-3 w-1 rounded-sm bg-[#E03A3E]" />
-            Data Entry
-          </h2>
-          <div className="grid gap-3">
-            {players.map((p, idx) => (
-              <div
-                key={p.id}
-                className="grid grid-cols-1 items-center gap-2 rounded-xl bg-[#181B1F]/60 px-3 py-2 sm:grid-cols-12"
-              >
-                <div className="text-xs font-semibold text-slate-500 sm:col-span-1">
-                  #{idx + 1}
-                </div>
-                <div className="sm:col-span-3">
-                  <input
-                    type="text"
-                    value={p.name}
-                    onChange={(e) => updateField(p.id, "name", e.target.value)}
-                    placeholder="Player name"
-                    className="w-full rounded-xl border border-[#2A2E32] bg-[#0E1115] px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-[#E03A3E] focus:ring-1 focus:ring-[#E03A3E]"
-                  />
-                </div>
-                <div className="sm:col-span-3">
-                  <input
-                    inputMode="numeric"
-                    type="number"
-                    min={0}
-                    value={p.damageInput}
-                    onChange={(e) => updateField(p.id, "damageInput", e.target.value)}
-                    placeholder="Damage (e.g. 1200)"
-                    className="w-full rounded-xl border border-[#2A2E32] bg-[#0E1115] px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-[#E03A3E] focus:ring-1 focus:ring-[#E03A3E]"
-                  />
-                </div>
-                <div className="sm:col-span-3">
-                  <input
-                    inputMode="numeric"
-                    type="number"
-                    min={0}
-                    value={p.killsInput}
-                    onChange={(e) => updateField(p.id, "killsInput", e.target.value)}
-                    placeholder="Kills (e.g. 3)"
-                    className="w-full rounded-xl border border-[#2A2E32] bg-[#0E1115] px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-[#E03A3E] focus:ring-1 focus:ring-[#E03A3E]"
-                  />
-                </div>
-                <div className="sm:col-span-2 flex justify-end">
-                  {players.length > 1 && (
-                    <button
-                      onClick={() => removePlayer(p.id)}
-                      className="w-full rounded-xl border border-[#2A2E32] bg-[#181B1F] px-2 py-2 text-xs text-slate-300 hover:border-[#E03A3E] hover:bg-[#20242A] hover:text-white shadow-sm"
-                      title="Remove player"
-                    >
-                      Remove
-                    </button>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-
-          <div className="mt-4 flex flex-wrap items-center gap-2">
-            <button
-              onClick={addGameAll}
-              className={primaryButton}
-              title="Commit current inputs for all players as one game"
-            >
-              Add Game (All Rows) ▶
-            </button>
-            <button
-              onClick={undoGameAll}
-              className={secondaryButton}
-              disabled={gameHistory.length === 0}
-              title="Undo the last added game for all players"
-            >
-              ◀ Undo Last Game
-            </button>
-          </div>
-        </section>
-
-        {/* RP & Wins Controls */}
-        <section className="mb-4 rounded-2xl border border-[#2A2E32] bg-[#121418] p-4 shadow-sm">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <div className="text-xs sm:text-sm font-medium text-slate-200">
-                Ranked Points (RP) — Session Total:{" "}
-                <span className="font-semibold text-[#E03A3E]">{totalRP}</span>
-                <span className="ml-3">
-                  Wins: <span className="font-semibold text-[#C9A86A]">{wins}</span>
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-500 mt-1">
-                Enter RP change per match (can be negative). Use buttons to track wins.
-              </p>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <input
-                type="number"
-                value={rpInput}
-                onChange={(e) => setRpInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") commitRP();
-                }}
-                placeholder="e.g. 45 or -23"
-                className="w-40 rounded-xl border border-[#2A2E32] bg-[#0E1115] px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-[#E03A3E] focus:ring-1 focus:ring-[#E03A3E]"
-              />
-              <button
-                onClick={commitRP}
-                className={primaryButton}
-                title="Add this RP delta to session total"
-              >
-                Add RP ▶
-              </button>
-              <button
-                onClick={undoRP}
-                className={secondaryButton}
-                disabled={rpHistory.length === 0}
-                title="Undo last RP add"
-              >
-                ◀ Undo RP
-              </button>
-
-              <div className="mx-2 h-6 w-px bg-[#2A2E32]" />
-
-              <button
-                onClick={addWin}
-                className={primaryButton}
-                title="Increment wins"
-              >
-                +1 Win
-              </button>
-              <button
-                onClick={undoWin}
-                className={secondaryButton}
-                disabled={winsHistory.length === 0}
-                title="Undo last win"
-              >
-                ◀ Undo Win
-              </button>
-            </div>
-          </div>
-        </section>
-
-        {/* Player Stats table */}
-        <div className="overflow-x-auto rounded-2xl border border-[#2A2E32] bg-[#121418] shadow-sm">
-          <table className="w-full text-left text-xs sm:text-sm">
-            <thead className="bg-[#181B1F] text-slate-300 border-b border-[#2A2E32]">
-              <tr>
-                <th className="px-4 py-3 w-[44px] text-[11px] uppercase tracking-[0.16em]">
-                  #
-                </th>
-                <th className="px-4 py-3 text-[11px] uppercase tracking-[0.16em]">
-                  Name
-                </th>
-                <th className="px-4 py-3 text-[11px] uppercase tracking-[0.16em]">
-                  Games
-                </th>
-                <th className="px-4 py-3 text-[11px] uppercase tracking-[0.16em]">
-                  Total Damage
-                </th>
-                <th className="px-4 py-3 text-[11px] uppercase tracking-[0.16em]">
-                  Total Kills
-                </th>
-                <th className="px-4 py-3 text-[11px] uppercase tracking-[0.16em]">
-                  1k Games
-                </th>
-                <th className="px-4 py-3 text-[11px] uppercase tracking-[0.16em]">
-                  2k Games
-                </th>
-                <th className="px-4 py-3 text-[11px] uppercase tracking-[0.16em]">
-                  Avg Damage
-                </th>
-                <th className="px-4 py-3 text-[11px] uppercase tracking-[0.16em]">
-                  Avg Kills
-                </th>
-                <th className="px-4 py-3 w-[1%]" />
-              </tr>
-            </thead>
-            <tbody>
-              {players.map((p, idx) => {
-                const avgs = derived.find((d) => d.id === p.id)!;
-                return (
-                  <tr
-                    key={p.id}
-                    className="border-t border-[#1D2026] odd:bg-[#101319] even:bg-[#121418] hover:bg-[#181B23] transition-colors"
+                  <button
+                    type="submit"
+                    disabled={!canSubmit}
+                    className="w-full rounded-xl bg-red-600 px-4 py-3 font-semibold disabled:opacity-40"
                   >
-                    <td className="px-4 py-3 text-slate-500">{idx + 1}</td>
-                    <td className="px-4 py-3 text-slate-100">{p.name || "—"}</td>
-                    <td className="px-4 py-3 text-slate-200">{p.games}</td>
-                    <td className="px-4 py-3 text-slate-200">{p.totalDamage}</td>
-                    <td className="px-4 py-3 text-slate-200">{p.totalKills}</td>
-                    <td className="px-4 py-3 text-slate-200">{p.oneKGames}</td>
-                    <td className="px-4 py-3 text-slate-200">{p.twoKGames}</td>
-                    <td className="px-4 py-3 text-slate-200">
-                      {avgs.avgDamage.toFixed(1)}
-                    </td>
-                    <td className="px-4 py-3 text-slate-200">
-                      {avgs.avgKills.toFixed(1)}
-                    </td>
-                    <td className="px-4 py-3">
-                      {players.length > 1 && (
-                        <button
-                          onClick={() => removePlayer(p.id)}
-                          className="rounded-xl border border-[#2A2E32] bg-[#181B1F] px-2 py-1 text-[11px] text-slate-300 hover:border-[#E03A3E] hover:bg-[#20242A] hover:text-white shadow-sm"
-                          title="Remove player"
-                        >
-                          Remove
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-            <tfoot>
-              <tr className="border-t border-[#2A2E32] bg-[#181B1F] font-semibold text-slate-100">
-                <td className="px-4 py-3 text-slate-500">—</td>
-                <td className="px-4 py-3 text-slate-300">Totals / Avg</td>
-                <td className="px-4 py-3">
-                  {players.reduce((acc, p) => acc + p.games, 0)}
-                </td>
-                <td className="px-4 py-3">
-                  {players.reduce((acc, p) => acc + p.totalDamage, 0)}
-                </td>
-                <td className="px-4 py-3">
-                  {players.reduce((acc, p) => acc + p.totalKills, 0)}
-                </td>
-                <td className="px-4 py-3">
-                  {players.reduce((acc, p) => acc + p.oneKGames, 0)}
-                </td>
-                <td className="px-4 py-3">
-                  {players.reduce((acc, p) => acc + p.twoKGames, 0)}
-                </td>
-                <td className="px-4 py-3">{groupAvgDamage.toFixed(1)}</td>
-                <td className="px-4 py-3">{groupAvgKills.toFixed(2)}</td>
-                <td className="px-4 py-3" />
-              </tr>
-            </tfoot>
-          </table>
+                    {saving ? "Saving…" : "Continue"}
+                  </button>
+                </form>
+              </div>
+            ) : (
+              // CTA CARDS (SIGNED IN)
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {/* Season Progression */}
+                {seasonDisabled ? (
+                  <div className="rounded-2xl border border-white/10 bg-white/5 p-8 shadow opacity-60">
+                    <div className="h-12 w-12 rounded-xl bg-red-600/20 flex items-center justify-center border border-red-500/30">
+                      <div className="h-5 w-5 rounded bg-red-500/80" />
+                    </div>
+
+                    <div className="mt-6 text-xl font-semibold">Season Progression</div>
+                    <div className="mt-2 text-sm text-white/65 max-w-sm">
+                      Track your ranked points over time with detailed graphs and insights
+                    </div>
+
+                    <div className="mt-4 text-xs text-white/50">
+                      Desktop only (graph is not optimized for mobile yet)
+                    </div>
+                  </div>
+                ) : (
+                  <Link
+                    href="/season-progression"
+                    className="rounded-2xl border border-white/10 bg-white/5 p-8 shadow hover:bg-white/10 transition block"
+                  >
+                    <div className="h-12 w-12 rounded-xl bg-red-600/20 flex items-center justify-center border border-red-500/30">
+                      <div className="h-5 w-5 rounded bg-red-500/80" />
+                    </div>
+
+                    <div className="mt-6 text-xl font-semibold">Season Progression</div>
+                    <div className="mt-2 text-sm text-white/65 max-w-sm">
+                      Track your ranked points over time with detailed graphs and insights
+                    </div>
+                  </Link>
+                )}
+
+                {/* In-Game Tracker */}
+                <Link
+                  href="/in-game-tracker"
+                  className="rounded-2xl border border-white/10 bg-white/5 p-8 shadow hover:bg-white/10 transition block"
+                >
+                  <div className="h-12 w-12 rounded-xl bg-white/10 flex items-center justify-center border border-white/10">
+                    <div className="h-5 w-5 rounded bg-white/60" />
+                  </div>
+
+                  <div className="mt-6 text-xl font-semibold">In-Game Tracker</div>
+                  <div className="mt-2 text-sm text-white/65 max-w-sm">
+                    Live session tracking with damage, kills, and performance stats
+                  </div>
+                </Link>
+              </div>
+            )}
+          </div>
         </div>
 
-        <p className="mt-3 text-[11px] text-slate-500">
-          Workflows: Enter stats for everyone →{" "}
-          <span className="font-semibold text-slate-200">Add Game (All Rows)</span> to record a
-          match. Use Undo to revert last frame. RP supports negatives; Wins increments by one.
-        </p>
-
-        <div className="mt-6 flex flex-wrap items-center gap-3">
-          <button
-            onClick={async () => {
-              const lines: string[] = [];
-              lines.push("**Apex Session Summary**");
-              lines.push(`Games recorded: ${sessionGames}`);
-              lines.push(`Total RP: ${totalRP} | Wins: ${wins}`);
-              lines.push("");
-              players.forEach((p, i) => {
-                const avgD = p.games > 0 ? (p.totalDamage / p.games).toFixed(0) : "0";
-                const avgK = p.games > 0 ? (p.totalKills / p.games).toFixed(1) : "0.0";
-                lines.push(
-                  `#${i + 1} ${p.name || "(no name)"} — Games: ${p.games}, Total Dmg: ${
-                    p.totalDamage
-                  }, Total K: ${p.totalKills}, 1k: ${
-                    p.oneKGames
-                  }, 2k: ${p.twoKGames}, Avg Dmg: ${avgD}, Avg K: ${avgK}`
-                );
-              });
-              lines.push("");
-              lines.push(
-                `Group Avg — Damage: ${groupAvgDamage.toFixed(
-                  0
-                )}, Kills: ${groupAvgKills.toFixed(1)}, Total RP: ${totalRP}, Wins: ${wins}`
-              );
-
-              const content = lines.join("\n");
-              try {
-                const res = await fetch("/api/discord", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ content }),
-                });
-                if (!res.ok) throw new Error(await res.text());
-                alert("Posted session to Discord ✅");
-              } catch (err: unknown) {
-                console.error(err);
-                const msg = err instanceof Error ? err.message : String(err);
-                alert(
-                  `Failed to post to Discord. ${
-                    msg ? `Details: ${msg}` : "Check server logs & .env."
-                  } ❌`
-                );
-              }
-            }}
-            className={secondaryButton}
-            title="Send the current session summary to your Discord channel"
-          >
-            Post Session to Discord
-          </button>
-        </div>
+        {/* FOOTER ERROR (optional) */}
+        {profile && err && <div className="mt-6 text-center text-sm text-red-400">{err}</div>}
       </div>
     </main>
   );
