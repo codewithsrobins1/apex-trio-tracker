@@ -1,47 +1,51 @@
-/* eslint-disable react/no-unescaped-entities */
-/* eslint-disable @typescript-eslint/no-explicit-any */
-export const runtime = "nodejs";
-
+// app/api/session/[id]/save/route.ts
 import { NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/supabase/supabaseServer";
+import { createClient } from "@supabase/supabase-js";
 
-// If you're on Next.js 15, params is a Promise; if you're on 14, remove the `await` and use plain { params: { id: string } }.
-type Ctx = { params: Promise<{ id: string }> };
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  { auth: { persistSession: false } }
+);
 
-export async function POST(req: Request, ctx: Ctx) {
-  try {
-    const { id } = await ctx.params;
-    if (!id) {
-      return NextResponse.json({ error: "Missing id in URL" }, { status: 400 });
-    }
+export async function POST(
+  req: Request,
+  { params }: { params: { id: string } }
+) {
+  const { id } = params;
+  const writeKey = req.headers.get("x-write-key");
 
-    let body: Record<string, any> = {};
-    try {
-      body = await req.json();
-    } catch {
-      return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
-    }
-
-    // Upsert by primary key `id`. We include whatever fields you send in `body`.
-    // If your table has `updated_at`, this will populate it.
-    const row = { id, ...body, updated_at: new Date().toISOString() };
-
-    const supabase = supabaseAdmin();
-    const { data, error } = await supabase
-      .from("sessions")
-      .upsert(row, { onConflict: "id" })
-      .select()
-      .single();
-
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 400 });
-    }
-
-    return NextResponse.json(data, { status: 200 });
-  } catch (e: any) {
-    return NextResponse.json(
-      { error: e?.message ?? "Unknown server error" },
-      { status: 500 }
-    );
+  if (!writeKey) {
+    return NextResponse.json({ error: "Missing write key" }, { status: 401 });
   }
+
+  const { data: sessionRow, error: fetchErr } = await supabase
+    .from("sessions")
+    .select("write_key")
+    .eq("id", id)
+    .maybeSingle();
+
+  if (fetchErr) {
+    return NextResponse.json({ error: fetchErr.message }, { status: 500 });
+  }
+
+  if (!sessionRow || sessionRow.write_key !== writeKey) {
+    return NextResponse.json({ error: "Invalid write key" }, { status: 403 });
+  }
+
+  const body = await req.json().catch(() => ({}));
+
+  const { error: updateErr } = await supabase
+    .from("sessions")
+    .update({
+      doc: body.doc ?? {},
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", id);
+
+  if (updateErr) {
+    return NextResponse.json({ error: updateErr.message }, { status: 500 });
+  }
+
+  return NextResponse.json({ ok: true });
 }

@@ -2,7 +2,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase/client";
 
 type AppDoc = {
@@ -14,27 +15,10 @@ type AppDoc = {
     totalKills: number;
     oneKGames: number;
     twoKGames: number;
+    donuts?: number; // optional for backward compatibility
   }>;
   sessionGames: number;
-  totalRP: number;
   wins: number;
-};
-
-type Season = {
-  id: string;
-  host_user_id: string;
-  name: string | null;
-  is_active: boolean;
-  created_at: string;
-};
-
-type RpEntry = {
-  id: string;
-  season_id: string;
-  user_id: string;
-  entry_date: string; // YYYY-MM-DD
-  delta_rp: number;
-  created_at: string;
 };
 
 function todayISODate() {
@@ -45,117 +29,105 @@ function todayISODate() {
   return `${yyyy}-${mm}-${dd}`;
 }
 
-export default function SessionViewerClient({ id }: { id: string }) {
+export default function SessionViewerClient({
+  id,
+  seasonId,
+}: {
+  id: string;
+  seasonId: string | null;
+}) {
+  const router = useRouter();
+
   const [doc, setDoc] = useState<AppDoc | null>(null);
 
-  // viewer identity (local only for bubbles)
+  // viewer name (presence only)
   const [viewerName, setViewerName] = useState<string>("");
-  const [viewers, setViewers] = useState<{ id: string; name: string }[]>([]);
 
-  // auth/user
+  // auth
   const [authUserId, setAuthUserId] = useState<string | null>(null);
 
-  // season + RP (B: source of truth)
-  const [season, setSeason] = useState<Season | null>(null);
-  const [myRpTotal, setMyRpTotal] = useState<number>(0);
-  const [myRecentRp, setMyRecentRp] = useState<RpEntry[]>([]);
+  // presence bubbles
+  const [viewers, setViewers] = useState<{ id: string; name: string }[]>([]);
 
-  // add RP form
-  const [entryDate] = useState<string>(todayISODate()); // locked
-  const [deltaRp, setDeltaRp] = useState<string>("");
-  const [savingRp, setSavingRp] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  // refresh UX
+  // refresh + status
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
+  // errors
+  const [err, setErr] = useState<string | null>(null);
+
+  // RP entry (player only)
+  const [deltaRp, setDeltaRp] = useState<string>("");
+  const [savingRp, setSavingRp] = useState(false);
+  const [myRpTotal, setMyRpTotal] = useState<number>(0);
+
+  const lockedDate = useMemo(() => todayISODate(), []);
+
   // ---- helpers -------------------------------------------------------------
 
-  async function ensureAuth() {
-    const { data: sessionData, error: sessionErr } = await supabase.auth.getSession();
-    if (sessionErr) throw sessionErr;
-
-    let uid = sessionData.session?.user?.id ?? null;
-    if (!uid) {
-      const { data, error } = await supabase.auth.signInAnonymously();
-      if (error) throw error;
-      uid = data.user?.id ?? null;
-    }
-
-    if (!uid) throw new Error("Auth session missing (anonymous sign-in failed).");
-    setAuthUserId(uid);
-    return uid;
-  }
-
-  async function fetchActiveSeason() {
+  const fetchDoc = useCallback(async () => {
     const { data, error } = await supabase
-      .from("seasons")
-      .select("*")
-      .eq("is_active", true)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (error) throw error;
-    if (!data) throw new Error("No active season found.");
-    setSeason(data as Season);
-    return data as Season;
-  }
-
-  async function fetchDoc() {
-    const { data, error } = await supabase.from("sessions").select("doc").eq("id", id).single();
+      .from("sessions")
+      .select("doc")
+      .eq("id", id)
+      .single();
 
     if (error) {
       console.error("Fetch failed:", error.message);
-      setDoc({ players: [], sessionGames: 0, totalRP: 0, wins: 0 });
+      // Keep UI functional even if missing
+      setDoc({ players: [], sessionGames: 0, wins: 0 });
       setLastUpdated(new Date());
       return;
     }
 
-    setDoc((data?.doc as AppDoc) ?? { players: [], sessionGames: 0, totalRP: 0, wins: 0 });
+    const next = (data?.doc as AppDoc) ?? { players: [], sessionGames: 0, wins: 0 };
+    setDoc(next);
     setLastUpdated(new Date());
-  }
+  }, [id]);
 
-  async function fetchMyRp(seasonId: string, uid: string) {
-    // Sum client-side for now (simple + reliable)
-    const { data, error } = await supabase
-      .from("rp_entries")
-      .select("id,season_id,user_id,entry_date,delta_rp,created_at")
-      .eq("season_id", seasonId)
-      .eq("user_id", uid)
-      .order("created_at", { ascending: false })
-      .limit(50);
+  const refreshMyRpTotal = useCallback(
+    async (season: string, uid: string) => {
+      const { data, error } = await supabase
+        .from("rp_entries")
+        .select("delta_rp")
+        .eq("season_id", season)
+        .eq("user_id", uid);
 
-    if (error) throw error;
+      if (error) throw error;
+      const total = (data ?? []).reduce((acc, r: any) => acc + (Number(r.delta_rp) || 0), 0);
+      setMyRpTotal(total);
+    },
+    []
+  );
 
-    const rows = (data ?? []) as RpEntry[];
-    setMyRecentRp(rows.slice(0, 10));
-    const total = rows.reduce((acc, r) => acc + (Number(r.delta_rp) || 0), 0);
-    setMyRpTotal(total);
-  }
-
-  const onManualRefresh = async () => {
+  const onManualRefresh = useCallback(async () => {
     setIsRefreshing(true);
-    setErr(null);
     try {
       await fetchDoc();
-      if (season?.id && authUserId) {
-        await fetchMyRp(season.id, authUserId);
+      if (seasonId && authUserId) {
+        await refreshMyRpTotal(seasonId, authUserId);
       }
-    } catch (e: any) {
-      setErr(e?.message ?? "Refresh failed");
     } finally {
       setIsRefreshing(false);
     }
+  }, [fetchDoc, seasonId, authUserId, refreshMyRpTotal]);
+
+  const goToUsernameGate = () => {
+    // Send them to / (your username entry page), then come back here
+    const returnTo = `${window.location.pathname}${window.location.search}`;
+    router.push(`/?redirect=${encodeURIComponent(returnTo)}`);
   };
 
   async function onAddRp(e: React.FormEvent) {
     e.preventDefault();
     setErr(null);
 
-    if (!season?.id || !authUserId) {
-      setErr("Missing season or auth user id.");
+    if (!seasonId) {
+      setErr("Missing seasonId. Open the shared link with ?season=<season_id>.");
+      return;
+    }
+    if (!authUserId) {
+      setErr("You must enter a username first.");
       return;
     }
 
@@ -164,21 +136,20 @@ export default function SessionViewerClient({ id }: { id: string }) {
 
       const n = Number(deltaRp);
       if (!Number.isFinite(n) || !Number.isInteger(n) || n === 0) {
-        throw new Error("Delta RP must be a non-zero whole number (e.g. 250 or -45).");
+        throw new Error("Delta RP must be a non-zero whole number (e.g. 50 or -23).");
       }
 
-      // RLS should enforce user_id = auth.uid(), but we still send it for clarity.
       const { error } = await supabase.from("rp_entries").insert({
-        season_id: season.id,
-        user_id: authUserId,
-        entry_date: entryDate,
+        season_id: seasonId,
+        user_id: authUserId, // RLS enforces this matches auth.uid()
+        entry_date: lockedDate,
         delta_rp: n,
       });
 
       if (error) throw error;
 
       setDeltaRp("");
-      await fetchMyRp(season.id, authUserId);
+      await refreshMyRpTotal(seasonId, authUserId);
     } catch (e: any) {
       setErr(e?.message ?? "Failed to add RP");
     } finally {
@@ -187,51 +158,51 @@ export default function SessionViewerClient({ id }: { id: string }) {
   }
 
   // ---- effects -------------------------------------------------------------
-
-  // Prompt name once (localStorage)
-  useEffect(() => {
-    let name = localStorage.getItem("apx_name") || "";
-    if (!name) {
-      name = prompt("Session Guest:")?.trim() || "Guest";
-      localStorage.setItem("apx_name", name);
-    }
-    setViewerName(name);
-  }, []);
-
-  // Initial load: ensure auth, season, doc, then compute my RP (B)
+  // auth session (NO anonymous sign-in here)
   useEffect(() => {
     let active = true;
 
     (async () => {
       try {
-        setErr(null);
-
-        const uid = await ensureAuth();
+        const { data, error } = await supabase.auth.getSession();
+        if (error) throw error;
+        const uid = data.session?.user?.id ?? null;
         if (!active) return;
-
-        const s = await fetchActiveSeason();
-        if (!active) return;
-
-        await fetchDoc();
-        if (!active) return;
-
-        await fetchMyRp(s.id, uid);
+        setAuthUserId(uid);
       } catch (e: any) {
-        if (active) setErr(e?.message ?? "Failed to load session");
-        // keep UI usable
-        if (active) setDoc({ players: [], sessionGames: 0, totalRP: 0, wins: 0 });
-      } finally {
-        if (active) setLastUpdated(new Date());
+        if (active) setErr(e?.message ?? "Failed to read auth session");
       }
     })();
 
     return () => {
       active = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  }, []);
 
-  // Presence bubbles
+  // initial load (+ RP total if authed)
+  useEffect(() => {
+    let active = true;
+
+    (async () => {
+      try {
+        setErr(null);
+        await fetchDoc();
+        if (!active) return;
+
+        if (seasonId && authUserId) {
+          await refreshMyRpTotal(seasonId, authUserId);
+        }
+      } catch (e: any) {
+        if (active) setErr(e?.message ?? "Failed to initialize viewer");
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [fetchDoc, seasonId, authUserId, refreshMyRpTotal]);
+
+  // presence bubbles (optional, but you already like them)
   useEffect(() => {
     if (!viewerName) return;
 
@@ -262,13 +233,36 @@ export default function SessionViewerClient({ id }: { id: string }) {
   // ---- derived -------------------------------------------------------------
 
   const players = doc?.players ?? [];
-  const totalDamage = useMemo(() => players.reduce((a, p) => a + p.totalDamage, 0), [players]);
-  const totalKills = useMemo(() => players.reduce((a, p) => a + p.totalKills, 0), [players]);
 
-  const secondaryButton =
-    "inline-flex items-center justify-center rounded-xl border border-[#2A2E32] bg-[#181B1F] px-3 sm:px-4 py-1.5 sm:py-2 text-xs sm:text-sm font-medium text-slate-200 shadow-sm hover:bg-[#20242A] hover:border-[#E03A3E] transition disabled:opacity-50 disabled:cursor-not-allowed";
+  const groupAvgDamage = useMemo(() => {
+    const withGames = players.filter((p) => (p.games ?? 0) > 0);
+    if (withGames.length === 0) return 0;
+    return withGames.reduce((acc, p) => acc + p.totalDamage / p.games, 0) / withGames.length;
+  }, [players]);
+
+  const derived = useMemo(
+    () =>
+      players.map((p) => ({
+        id: p.id,
+        avgDamage: p.games > 0 ? p.totalDamage / p.games : 0,
+        donuts: Number(p.donuts ?? 0),
+      })),
+    [players]
+  );
+
+  const canSubmitRp = useMemo(() => {
+    const n = Number(deltaRp);
+    if (!seasonId) return false;
+    if (!authUserId) return false;
+    if (!Number.isFinite(n) || !Number.isInteger(n) || n === 0) return false;
+    if (deltaRp.trim() === "") return false;
+    return !savingRp;
+  }, [deltaRp, savingRp, seasonId, authUserId]);
+
   const primaryButton =
     "inline-flex items-center justify-center rounded-xl border border-[#E03A3E] bg-[#E03A3E] px-3 sm:px-4 py-1.5 sm:py-2 text-xs sm:text-sm font-medium text-white shadow-sm hover:bg-[#B71C1C] hover:border-[#B71C1C] transition disabled:opacity-50 disabled:cursor-not-allowed";
+  const secondaryButton =
+    "inline-flex items-center justify-center rounded-xl border border-[#2A2E32] bg-[#181B1F] px-3 sm:px-4 py-1.5 sm:py-2 text-xs sm:text-sm font-medium text-slate-200 shadow-sm hover:bg-[#20242A] hover:border-[#E03A3E] transition disabled:opacity-50 disabled:cursor-not-allowed";
 
   if (!doc) {
     return (
@@ -306,8 +300,7 @@ export default function SessionViewerClient({ id }: { id: string }) {
           )}
         </div>
 
-        {/* header */}
-        <header className="mb-6">
+        <header className="mb-4">
           <h1 className="text-2xl font-bold mb-1 tracking-tight text-[#F5F5F5]">
             <span className="mr-2 inline-block border-l-4 border-[#E03A3E] pl-2 uppercase text-[10px] tracking-[0.2em] text-slate-400">
               Apex Legends
@@ -323,13 +316,18 @@ export default function SessionViewerClient({ id }: { id: string }) {
             {lastUpdated ? `Last updated ${lastUpdated.toLocaleTimeString()}` : "Not loaded yet…"}
           </p>
 
-          {season && (
-            <p className="text-[11px] text-slate-500 mt-1">
-              Active season: <span className="text-slate-300">{season.name ?? season.id.slice(0, 8)}</span>
-              {" · "}
-              Role: <span className="text-slate-300">Player</span>
-            </p>
-          )}
+          <p className="text-[11px] text-slate-500 mt-1">
+            {seasonId ? (
+              <>
+                Active season: <span className="text-slate-300 font-mono">{seasonId.slice(0, 8)}</span> · Role:{" "}
+                <span className="text-slate-200 font-semibold">Viewer</span>
+              </>
+            ) : (
+              <>
+                Missing <span className="text-slate-300 font-mono">?season=</span> in the URL (RP will be disabled)
+              </>
+            )}
+          </p>
         </header>
 
         {err && (
@@ -346,7 +344,7 @@ export default function SessionViewerClient({ id }: { id: string }) {
           </div>
 
           <div className="rounded-2xl border border-[#2A2E32] bg-[#121418] p-4 shadow-sm">
-            <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500 mb-1">Session Games</div>
+            <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500 mb-1">Games</div>
             <div className="text-xl font-semibold text-slate-100">{doc.sessionGames}</div>
           </div>
 
@@ -356,80 +354,75 @@ export default function SessionViewerClient({ id }: { id: string }) {
           </div>
 
           <div className="rounded-2xl border border-[#2A2E32] bg-[#121418] p-4 shadow-sm">
-            <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500 mb-1">Your RP</div>
-            <div className="text-xl font-semibold text-[#E03A3E]">{myRpTotal}</div>
+            <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500 mb-1">
+              Group Avg Damage
+            </div>
+            <div className="text-xl font-semibold text-[#C9A86A]">{groupAvgDamage.toFixed(0)}</div>
           </div>
 
-          <div className="rounded-2xl border border-[#2A2E32] bg-[#121418] p-4 shadow-sm">
-            <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500 mb-1">Squad Totals</div>
-            <div className="text-sm text-slate-200">
-              DMG: <span className="font-semibold text-[#C9A86A]">{totalDamage}</span>{" "}
-              <span className="mx-1 text-slate-500">·</span>K:{" "}
-              <span className="font-semibold text-slate-100">{totalKills}</span>
+          <div className="rounded-2xl border border-[#2A2E32] bg-gradient-to-br from-[#181B1F] via-[#1F2228] to-[#3A0F13] p-4 shadow-sm">
+            <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400 mb-1">Your RP</div>
+            <div className="text-xl font-semibold">
+              <span className="text-[#E03A3E]">{authUserId ? myRpTotal : "—"}</span>
             </div>
           </div>
         </div>
 
-        {/* Add RP (player-only) */}
+        {/* Add RP */}
         <section className="mb-4 rounded-2xl border border-[#2A2E32] bg-[#121418] p-4 shadow-sm">
-          <div className="text-xs sm:text-sm font-semibold text-slate-200 flex items-center gap-2">
+          <h2 className="mb-2 text-xs sm:text-sm font-semibold text-slate-200 flex items-center gap-2">
             <span className="h-3 w-1 rounded-sm bg-[#E03A3E]" />
-            Add RP (yourself only)
-          </div>
-          <p className="mt-1 text-[11px] text-slate-500">
-            Date is locked to today. Inserts are protected by RLS (you can only write your own rows).
-          </p>
+            Add RP (requires username)
+          </h2>
 
-          <form onSubmit={onAddRp} className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-2 items-end">
+          {!authUserId && (
+            <div className="mb-3 rounded-xl border border-[#2A2E32] bg-[#181B1F] px-3 py-2 text-xs text-slate-300 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+              <div>
+                RP is disabled for guests. Enter your username to sign in, then come back to this session.
+              </div>
+              <button onClick={goToUsernameGate} className={primaryButton}>
+                Enter username
+              </button>
+            </div>
+          )}
+
+          <form onSubmit={onAddRp} className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
             <label className="block">
-              <div className="text-[11px] text-slate-500 mb-1">Date</div>
+              <div className="text-[11px] text-slate-400 mb-2">Date</div>
               <input
-                type="date"
-                value={entryDate}
+                type="text"
+                value={lockedDate}
                 disabled
-                className="w-full rounded-xl border border-[#2A2E32] bg-[#0E1115] px-3 py-2 text-sm text-slate-400 outline-none"
+                className="w-full rounded-xl border border-[#2A2E32] bg-[#0E1115] px-3 py-2 text-sm text-slate-100 outline-none opacity-80"
               />
             </label>
 
             <label className="block">
-              <div className="text-[11px] text-slate-500 mb-1">Delta RP</div>
+              <div className="text-[11px] text-slate-400 mb-2">Delta RP</div>
               <input
                 inputMode="numeric"
+                type="number"
                 value={deltaRp}
                 onChange={(e) => setDeltaRp(e.target.value)}
-                placeholder="e.g. 250 or -45"
-                className="w-full rounded-xl border border-[#2A2E32] bg-[#0E1115] px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-[#E03A3E] focus:ring-1 focus:ring-[#E03A3E]"
+                placeholder="e.g. 50 or -23"
+                disabled={!authUserId || !seasonId}
+                className="w-full rounded-xl border border-[#2A2E32] bg-[#0E1115] px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-[#E03A3E] focus:ring-1 focus:ring-[#E03A3E] disabled:opacity-60"
               />
             </label>
 
-            <button
-              type="submit"
-              disabled={
-                savingRp ||
-                !authUserId ||
-                !season?.id ||
-                deltaRp.trim() === "" ||
-                !Number.isInteger(Number(deltaRp)) ||
-                Number(deltaRp) === 0
-              }
-              className={primaryButton}
-            >
+            <button type="submit" disabled={!canSubmitRp} className={primaryButton}>
               {savingRp ? "Adding…" : "Add RP"}
             </button>
           </form>
 
-          {myRecentRp.length > 0 && (
-            <div className="mt-3 text-[11px] text-slate-500">
-              Latest:{" "}
-              <span className="text-slate-300">
-                {myRecentRp[0].entry_date} ({myRecentRp[0].delta_rp > 0 ? "+" : ""}
-                {myRecentRp[0].delta_rp})
-              </span>
+          {!seasonId && (
+            <div className="mt-3 text-[11px] text-red-200/80">
+              RP disabled: open this link as <span className="font-mono">/s/{id}?season=&lt;season_id&gt;</span>
             </div>
           )}
         </section>
 
-        {/* Player table (host snapshot) */}
+        {/* Player table */}
         <div className="overflow-x-auto rounded-2xl border border-[#2A2E32] bg-[#121418] shadow-sm">
           <table className="w-full text-left text-xs sm:text-sm">
             <thead className="bg-[#181B1F] text-slate-300 border-b border-[#2A2E32]">
@@ -440,22 +433,29 @@ export default function SessionViewerClient({ id }: { id: string }) {
                 <th className="px-4 py-3 text-[11px] uppercase tracking-[0.16em]">Total Kills</th>
                 <th className="px-4 py-3 text-[11px] uppercase tracking-[0.16em]">1k</th>
                 <th className="px-4 py-3 text-[11px] uppercase tracking-[0.16em]">2k</th>
+                <th className="px-4 py-3 text-[11px] uppercase tracking-[0.16em]">Avg Damage</th>
+                <th className="px-4 py-3 text-[11px] uppercase tracking-[0.16em]">Donuts</th>
               </tr>
             </thead>
             <tbody>
-              {players.map((p) => (
-                <tr
-                  key={p.id}
-                  className="border-t border-[#1D2026] odd:bg-[#101319] even:bg-[#121418] hover:bg-[#181B23] transition-colors"
-                >
-                  <td className="px-4 py-3 text-slate-100">{p.name || "—"}</td>
-                  <td className="px-4 py-3 text-slate-200">{p.games}</td>
-                  <td className="px-4 py-3 text-slate-200">{p.totalDamage}</td>
-                  <td className="px-4 py-3 text-slate-200">{p.totalKills}</td>
-                  <td className="px-4 py-3 text-slate-200">{p.oneKGames}</td>
-                  <td className="px-4 py-3 text-slate-200">{p.twoKGames}</td>
-                </tr>
-              ))}
+              {players.map((p) => {
+                const d = derived.find((x) => x.id === p.id)!;
+                return (
+                  <tr
+                    key={p.id}
+                    className="border-t border-[#1D2026] odd:bg-[#101319] even:bg-[#121418] hover:bg-[#181B23] transition-colors"
+                  >
+                    <td className="px-4 py-3 text-slate-100">{p.name || "—"}</td>
+                    <td className="px-4 py-3 text-slate-200">{p.games}</td>
+                    <td className="px-4 py-3 text-slate-200">{p.totalDamage}</td>
+                    <td className="px-4 py-3 text-slate-200">{p.totalKills}</td>
+                    <td className="px-4 py-3 text-slate-200">{p.oneKGames}</td>
+                    <td className="px-4 py-3 text-slate-200">{p.twoKGames}</td>
+                    <td className="px-4 py-3 text-slate-200">{d.avgDamage.toFixed(1)}</td>
+                    <td className="px-4 py-3 text-slate-200">{d.donuts}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

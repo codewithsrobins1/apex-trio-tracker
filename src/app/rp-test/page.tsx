@@ -6,6 +6,7 @@ import { supabase } from "@/lib/supabase/client";
 import { fetchMyProfile, type Profile } from "@/lib/auth/usernameAuth";
 
 type Season = {
+  season_number: any;
   id: string;
   host_user_id: string;
   name: string | null;
@@ -200,7 +201,9 @@ export default function InGameTrackerPage() {
               {season ? (
                 <>
                   {" "}
-                  • Active season: <span className="text-white/90">{season.name ?? season.id.slice(0, 8)}</span>
+                  • <span className="font-semibold text-slate-200">
+                        Season {season.season_number}
+                    </span>
                 </>
               ) : null}
               {isHost ? (

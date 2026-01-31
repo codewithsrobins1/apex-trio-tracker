@@ -13,6 +13,7 @@ type Season = {
   name: string | null;
   is_active: boolean;
   created_at: string;
+  season_number: number | null;
 };
 
 function todayISODate() {
@@ -23,6 +24,16 @@ function todayISODate() {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+// Must match /app/page.tsx
+const SEASON_LS_KEY = "apex_selected_season_number";
+function getSavedSeasonNumber(): number | null {
+  if (typeof window === "undefined") return null;
+  const raw = window.localStorage.getItem(SEASON_LS_KEY);
+  if (!raw) return null;
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
 export default function ApexTrioTracker() {
   // ===== Types =====
   type GameEntry = { damage: number; kills: number };
@@ -31,12 +42,12 @@ export default function ApexTrioTracker() {
     name: string;
     damageInput: string;
     killsInput: string;
-    games: number; // increments with global Add Game
+    games: number;
     totalDamage: number;
     totalKills: number;
-    oneKGames: number; // damage >= 1000
-    twoKGames: number; // damage >= 2000
-    donuts: number; // damage == 0 AND kills == 0
+    oneKGames: number;
+    twoKGames: number;
+    donuts: number;
     history: GameEntry[];
   };
   type GameFrame = { entries: { id: string; entry: GameEntry }[] };
@@ -65,6 +76,17 @@ export default function ApexTrioTracker() {
   const [bootErr, setBootErr] = useState<string | null>(null);
   const [bootLoading, setBootLoading] = useState(true);
 
+  // Discord
+  const [discordPosting, setDiscordPosting] = useState(false);
+  const [discordErr, setDiscordErr] = useState<string | null>(null);
+
+  // New Season confirm + state
+  const [showSeasonConfirm, setShowSeasonConfirm] = useState(false);
+  const [seasonStarting, setSeasonStarting] = useState(false);
+
+  // Manual season number (from Home)
+  const [selectedSeasonNumber, setSelectedSeasonNumber] = useState<number | null>(null);
+
   useEffect(() => {
     let mounted = true;
 
@@ -78,29 +100,56 @@ export default function ApexTrioTracker() {
 
         const { data: sessionData, error: sessionErr } = await supabase.auth.getSession();
         if (sessionErr) throw sessionErr;
+
         const uid = sessionData.session?.user?.id ?? null;
         if (!uid) throw new Error("Not signed in. Go back to Home and enter a username.");
         setAuthUserId(uid);
 
-        const { data: s, error: seasonErr } = await supabase
-          .from("seasons")
-          .select("*")
-          .eq("is_active", true)
-          .order("created_at", { ascending: false })
-          .limit(1)
-          .maybeSingle();
+        // Read season selection (saved by /app/page.tsx)
+        const manualSeasonNumber = getSavedSeasonNumber();
+        setSelectedSeasonNumber(manualSeasonNumber);
 
-        if (seasonErr) throw seasonErr;
-        if (!s) throw new Error("No active season found. Create one in Supabase.");
-        setSeason(s as Season);
+        // Pick season: manual season_number if present; else active season.
+        let chosenSeason: Season | null = null;
 
-        const host = (s as Season).host_user_id === uid;
+        if (manualSeasonNumber) {
+          const { data: sByNum, error: sByNumErr } = await supabase
+            .from("seasons")
+            .select("*")
+            .eq("season_number", manualSeasonNumber)
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          if (sByNumErr) throw sByNumErr;
+          if (!sByNum) {
+            throw new Error(`Season ${manualSeasonNumber} not found. Set a valid season on Home.`);
+          }
+          chosenSeason = sByNum as Season;
+        } else {
+          const { data: sActive, error: seasonErr } = await supabase
+            .from("seasons")
+            .select("*")
+            .eq("is_active", true)
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          if (seasonErr) throw seasonErr;
+          if (!sActive) throw new Error("No active season found. Create one in Supabase.");
+          chosenSeason = sActive as Season;
+        }
+
+        setSeason(chosenSeason);
+
+        const host = chosenSeason.host_user_id === uid;
         setIsHost(host);
 
+        // membership for chosen season
         const { data: memberRow, error: memberErr } = await supabase
           .from("season_players")
           .select("season_id,user_id")
-          .eq("season_id", (s as Season).id)
+          .eq("season_id", chosenSeason.id)
           .eq("user_id", uid)
           .maybeSingle();
 
@@ -124,9 +173,20 @@ export default function ApexTrioTracker() {
   const [gameHistory, setGameHistory] = useState<GameFrame[]>([]);
   const [showConfirm, setShowConfirm] = useState(false);
 
-  // RP (self-only; persists to rp_entries)
+  /**
+   * ===== RP (SELF ONLY) =====
+   * Goal:
+   * - During a play session, show "Your RP" as the *current session total* (starting at 0).
+   * - When you post to Discord (end-of-session), refresh the season total from DB and reset session RP back to 0.
+   *
+   * Implementation:
+   * - seasonRpTotal: your total for the season (loaded on boot, refreshed after Discord post)
+   * - sessionRpDelta: RP you’ve added in this UI session (commit/undo adjusts this)
+   * - rpHistory: keeps the inserted entry IDs so undo can delete rows safely
+   */
   const [rpInput, setRpInput] = useState<string>("");
-  const [totalRP, setTotalRP] = useState<number>(0); // your season total
+  const [seasonRpTotal, setSeasonRpTotal] = useState<number>(0);
+  const [sessionRpDelta, setSessionRpDelta] = useState<number>(0);
   const [rpHistory, setRpHistory] = useState<{ entryId: string; delta: number }[]>([]);
   const [rpEntryDate, setRpEntryDate] = useState<string>(todayISODate());
   const [rpSaving, setRpSaving] = useState(false);
@@ -227,8 +287,8 @@ export default function ApexTrioTracker() {
     setGameHistory((h) => h.slice(0, -1));
   };
 
-  // ===== RP (SELF ONLY) =====
-  const refreshMyRpTotal = useCallback(async () => {
+  // ===== RP helpers =====
+  const refreshMySeasonRpTotal = useCallback(async () => {
     if (!season?.id || !authUserId) return;
 
     const { data, error } = await supabase
@@ -241,14 +301,15 @@ export default function ApexTrioTracker() {
 
     if (error) throw error;
     const sum = (data ?? []).reduce((acc: number, r: any) => acc + (Number(r.delta_rp) || 0), 0);
-    setTotalRP(sum);
+    setSeasonRpTotal(sum);
   }, [season?.id, authUserId]);
 
+  // Load season total once (for reference) when season + member are ready
   useEffect(() => {
     if (!season?.id || !authUserId) return;
     if (!isMember) return;
-    refreshMyRpTotal().catch(() => {});
-  }, [season?.id, authUserId, isMember, refreshMyRpTotal]);
+    refreshMySeasonRpTotal().catch(() => {});
+  }, [season?.id, authUserId, isMember, refreshMySeasonRpTotal]);
 
   const commitRP = async () => {
     setRpErr(null);
@@ -278,9 +339,11 @@ export default function ApexTrioTracker() {
       if (error) throw error;
       const entryId = (data as any)?.id as string;
 
+      // Session tracking
       setRpHistory((h) => [...h, { entryId, delta }]);
+      setSessionRpDelta((v) => v + delta);
+
       setRpInput("");
-      await refreshMyRpTotal();
     } catch (e: any) {
       setRpErr(e?.message ?? "Failed to add RP");
     } finally {
@@ -307,8 +370,8 @@ export default function ApexTrioTracker() {
       if (error) throw error;
 
       setRpHistory((h) => h.slice(0, -1));
+      setSessionRpDelta((v) => v - last.delta);
       setRpInput(String(last.delta));
-      await refreshMyRpTotal();
     } catch (e: any) {
       setRpErr(e?.message ?? "Failed to undo RP");
     } finally {
@@ -361,32 +424,28 @@ export default function ApexTrioTracker() {
     wins,
   };
 
-const createSession = useCallback(async () => {
-  if (!isHost) return;
+  const createSession = useCallback(async () => {
+    if (!isHost) return;
+    if (!season?.id) throw new Error("No season selected/loaded.");
 
-  if (!season?.id) throw new Error("No active season id available to share.");
+    const id = crypto.randomUUID();
+    setSessionId(id);
 
-  const id = crypto.randomUUID();
-  setSessionId(id);
+    const res = await fetch(`/api/session/${id}/save`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ doc: currentDoc }),
+    });
 
-  const res = await fetch(`/api/session/${id}/save`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ doc: currentDoc }),
-  });
+    if (!res.ok) {
+      const t = await res.text().catch(() => "");
+      throw new Error(t || "Failed saving session");
+    }
 
-  if (!res.ok) {
-    const t = await res.text().catch(() => "");
-    throw new Error(t || "Failed saving session");
-  }
-
-    if (!season?.id) throw new Error("No active season id available to share.");
     const url = `${window.location.origin}/s/${id}?season=${season.id}`;
-
-  const ok = await copyToClipboard(url);
-  alert(ok ? `Live session link copied!\n${url}` : `Couldn't copy automatically. Here it is:\n${url}`);
-}, [currentDoc, isHost, season?.id]);
-
+    const ok = await copyToClipboard(url);
+    alert(ok ? `Live session link copied!\n${url}` : `Couldn't copy automatically. Here it is:\n${url}`);
+  }, [currentDoc, isHost, season?.id]);
 
   const saveTimer = useRef<number | undefined>(undefined);
   useEffect(() => {
@@ -402,14 +461,132 @@ const createSession = useCallback(async () => {
     return () => window.clearTimeout(saveTimer.current);
   }, [currentDoc, sessionId]);
 
-  const resetLocalSession = () => {
+  const resetLocalSession = useCallback(() => {
     if (!isHost) return;
     setPlayers([makeNewPlayer()]);
     setSessionGames(0);
     setGameHistory([]);
     setWins(0);
     setWinsHistory([]);
-  };
+
+    // reset session RP tracking (but DO NOT touch season total)
+    setSessionRpDelta(0);
+    setRpHistory([]);
+    setRpInput("");
+    setRpErr(null);
+  }, [isHost]);
+
+  // ===== New Season (HOST ONLY) =====
+  const startNewSeason = useCallback(async () => {
+    if (!isHost) return;
+
+    try {
+      setSeasonStarting(true);
+
+      const { data, error } = await supabase.rpc("start_new_season");
+      if (error) throw error;
+
+      setSeason(data as Season);
+
+      // reset local tracker session UI
+      resetLocalSession();
+
+      // refresh season total in the NEW season (likely 0)
+      setSeasonRpTotal(0);
+
+      // re-check membership against new season
+      if (authUserId && (data as any)?.id) {
+        const { data: memberRow, error: memberErr } = await supabase
+          .from("season_players")
+          .select("season_id,user_id")
+          .eq("season_id", (data as any).id)
+          .eq("user_id", authUserId)
+          .maybeSingle();
+
+        if (!memberErr) setIsMember(!!memberRow);
+      }
+    } catch (e: any) {
+      alert(e?.message ?? "Failed to start new season");
+    } finally {
+      setSeasonStarting(false);
+    }
+  }, [isHost, resetLocalSession, authUserId]);
+
+  // ===== Discord post =====
+  async function postSessionToDiscord() {
+    setDiscordErr(null);
+
+    try {
+      if (!isHost) return;
+      if (!season?.id) throw new Error("No season loaded.");
+
+      setDiscordPosting(true);
+
+      const lines: string[] = [];
+      lines.push("**Apex Session Summary**");
+      lines.push(`Games recorded: ${sessionGames}`);
+      lines.push(`Wins: ${wins}`);
+      lines.push(`Group Avg Damage: ${groupAvgDamage.toFixed(0)}`);
+      lines.push(`Season: ${season.season_number ?? "?"}`);
+      lines.push("");
+
+      players.forEach((p, i) => {
+        const avgD = p.games > 0 ? (p.totalDamage / p.games).toFixed(0) : "0";
+        lines.push(
+          `#${i + 1} ${p.name || "(no name)"} — Games: ${p.games}, Total Dmg: ${p.totalDamage}, Total K: ${p.totalKills}, 1k: ${p.oneKGames}, 2k: ${p.twoKGames}, Avg Dmg: ${avgD}, Donuts: ${p.donuts}`
+        );
+      });
+
+      // No "Your RP (season): ..." line (per your request)
+      const content = lines.join("\n");
+
+      const postDate = rpEntryDate || todayISODate();
+
+      const {
+        data: { session: authSession },
+        error: sessionErr,
+      } = await supabase.auth.getSession();
+      if (sessionErr) throw sessionErr;
+
+      const token = authSession?.access_token;
+      if (!token) throw new Error("Missing auth token. Please sign in again.");
+
+      const res = await fetch("/api/discord", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          seasonId: season.id,
+          postDate,
+          summaryText: content,
+        }),
+      });
+
+      if (!res.ok) {
+        const t = await res.text().catch(() => "");
+        throw new Error(t || "Discord post failed");
+      }
+
+      // End-of-session behavior:
+      // 1) refresh season total from DB
+      // 2) reset session RP tracking to 0
+      await refreshMySeasonRpTotal();
+      setSessionRpDelta(0);
+      setRpHistory([]);
+      setRpInput("");
+      setRpErr(null);
+
+      alert("Posted session to Discord ✅ (and updated season graph)");
+    } catch (e: any) {
+      console.error(e);
+      setDiscordErr(e?.message ?? "Failed to post to Discord");
+      alert(`Failed to post to Discord. ${e?.message ?? ""}`);
+    } finally {
+      setDiscordPosting(false);
+    }
+  }
 
   // Small helper for button base styles
   const primaryButton =
@@ -432,6 +609,10 @@ const createSession = useCallback(async () => {
         <div className="max-w-lg rounded-2xl border border-[#2A2E32] bg-[#121418] p-6">
           <div className="text-lg font-semibold text-white">Can’t load tracker</div>
           <div className="mt-2 text-sm text-slate-300">{bootErr}</div>
+          <div className="mt-3 text-xs text-slate-400">
+            If you set a season number on Home, ensure it exists in the <span className="text-slate-200">seasons</span>{" "}
+            table (season_number = {selectedSeasonNumber ?? "—"}).
+          </div>
         </div>
       </main>
     );
@@ -440,11 +621,11 @@ const createSession = useCallback(async () => {
   // ===== UI =====
   return (
     <main className="min-h-screen bg-[#050608] text-slate-100 px-4 py-8">
+      {/* New Session confirm */}
       {showConfirm && isHost && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
           <div className="w-full max-w-sm rounded-lg bg-neutral-900 p-6 shadow-lg">
             <h2 className="text-lg font-semibold text-white">Start a new session?</h2>
-
             <p className="mt-2 text-sm text-neutral-400">
               Are you sure you want to create a new session? This will end the current one.
             </p>
@@ -471,6 +652,38 @@ const createSession = useCallback(async () => {
         </div>
       )}
 
+      {/* New Season confirm */}
+      {showSeasonConfirm && isHost && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="w-full max-w-sm rounded-lg bg-neutral-900 p-6 shadow-lg">
+            <h2 className="text-lg font-semibold text-white">Start a new season?</h2>
+            <p className="mt-2 text-sm text-neutral-400">
+              This will create Season {(season?.season_number ?? 0) + 1} and reset the tracker session UI. Historical
+              RP remains in previous seasons.
+            </p>
+
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                onClick={() => setShowSeasonConfirm(false)}
+                className="rounded-md px-4 py-2 text-sm text-neutral-300 hover:bg-neutral-800 cursor-pointer"
+              >
+                Cancel
+              </button>
+
+              <button
+                onClick={async () => {
+                  setShowSeasonConfirm(false);
+                  await startNewSeason();
+                }}
+                className="rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-500 cursor-pointer"
+              >
+                {seasonStarting ? "Starting…" : "Yes, start new season"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="mx-auto max-w-[1300px]">
         <header className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div>
@@ -482,13 +695,11 @@ const createSession = useCallback(async () => {
             </h1>
 
             <p className="mt-2 text-xs sm:text-sm text-slate-400">
-              Signed in as{" "}
-              <span className="font-semibold text-slate-200">{profile?.display_name ?? "—"}</span>
+              Signed in as <span className="font-semibold text-slate-200">{profile?.display_name ?? "—"}</span>
               {season ? (
                 <>
                   {" "}
-                  • Active season:{" "}
-                  <span className="font-semibold text-slate-200">{season.name ?? season.id.slice(0, 8)}</span>
+                  • <span className="font-semibold text-slate-200">Season {season.season_number ?? "?"}</span>
                 </>
               ) : null}
               {" • "}
@@ -513,7 +724,11 @@ const createSession = useCallback(async () => {
               disabled={!isHost || players.length >= MAX_PLAYERS}
               className={secondaryButton}
               title={
-                !isHost ? "Viewers cannot add players" : players.length >= MAX_PLAYERS ? "Max 3 players" : "Add another player"
+                !isHost
+                  ? "Viewers cannot add players"
+                  : players.length >= MAX_PLAYERS
+                  ? "Max 3 players"
+                  : "Add another player"
               }
             >
               + Add Player
@@ -526,6 +741,15 @@ const createSession = useCallback(async () => {
               title={!isHost ? "Viewers cannot start a new session" : "Start a new session"}
             >
               New Session
+            </button>
+
+            <button
+              onClick={() => (isHost ? setShowSeasonConfirm(true) : null)}
+              disabled={!isHost || seasonStarting}
+              className={secondaryButton}
+              title={!isHost ? "Viewers cannot start a new season" : "Create Season +1 and reset local tracker"}
+            >
+              {seasonStarting ? "Starting…" : "New Season"}
             </button>
 
             <button
@@ -548,7 +772,7 @@ const createSession = useCallback(async () => {
           </div>
         </header>
 
-        {/* KPI cards (UPDATED) */}
+        {/* KPI cards */}
         <section className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-5">
           <div className="rounded-2xl border border-[#2A2E32] bg-[#121418] p-4 shadow-sm">
             <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">Players</div>
@@ -556,24 +780,36 @@ const createSession = useCallback(async () => {
           </div>
 
           <div className="rounded-2xl border border-[#2A2E32] bg-[#121418] p-4 shadow-sm">
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">Number of Games</div>
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">
+              Number of Games
+            </div>
             <div className="text-xl font-semibold text-slate-100">{sessionGames}</div>
           </div>
 
           <div className="rounded-2xl border border-[#2A2E32] bg-[#121418] p-4 shadow-sm">
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">Number of Wins</div>
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">
+              Number of Wins
+            </div>
             <div className="text-xl font-semibold text-slate-100">{wins}</div>
           </div>
 
           <div className="rounded-2xl border border-[#2A2E32] bg-[#121418] p-4 shadow-sm">
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">Group Avg Damage</div>
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">
+              Group Avg Damage
+            </div>
             <div className="text-xl font-semibold text-[#C9A86A]">{groupAvgDamage.toFixed(0)}</div>
           </div>
 
+          {/* Session RP display (resets after Discord post) */}
           <div className="rounded-2xl border border-[#2A2E32] bg-gradient-to-br from-[#181B1F] via-[#1F2228] to-[#3A0F13] p-4 shadow-sm">
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400">Your RP</div>
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400">
+              Your RP (session)
+            </div>
             <div className="text-xl font-semibold">
-              <span className="text-[#E03A3E]">{totalRP}</span>
+              <span className="text-[#E03A3E]">{sessionRpDelta}</span>
+            </div>
+            <div className="mt-1 text-[10px] text-slate-500">
+              Season total updates after Discord post: {seasonRpTotal}
             </div>
           </div>
         </section>
@@ -676,15 +912,11 @@ const createSession = useCallback(async () => {
         <section className="mb-4 rounded-2xl border border-[#2A2E32] bg-[#121418] p-4 shadow-sm">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <div className="text-xs sm:text-sm font-medium text-slate-200">
-                Add Ranked Points (RP) — Your Total:{" "}
-                <span className="font-semibold text-[#E03A3E]">{totalRP}</span>
-                <span className="ml-3">
-                  Wins: <span className="font-semibold text-[#C9A86A]">{wins}</span>
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-500 mt-1">RP is self-tracked (writes to Supabase). Wins are host-controlled.</p>
-              {rpErr && <p className="mt-2 text-[11px] text-red-300">{rpErr}</p>}
+              <h2 className="mb-2 text-xs sm:text-sm font-semibold text-slate-200 flex items-center gap-2">
+                <span className="h-3 w-1 rounded-sm bg-[#E03A3E]" />
+                Add Ranked Points
+              </h2>
+              {rpErr && <div className="text-[11px] text-red-300">{rpErr}</div>}
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
@@ -712,7 +944,7 @@ const createSession = useCallback(async () => {
                 onClick={commitRP}
                 disabled={!isMember || rpSaving}
                 className={primaryButton}
-                title={!isMember ? "Host must add you to season_players first" : "Add RP delta to your season total"}
+                title={!isMember ? "Host must add you to season_players first" : "Add RP delta to this session"}
               >
                 {rpSaving ? "Saving…" : "Add RP ▶"}
               </button>
@@ -728,7 +960,12 @@ const createSession = useCallback(async () => {
 
               <div className="mx-2 h-6 w-px bg-[#2A2E32]" />
 
-              <button onClick={addWin} disabled={!isHost} className={primaryButton} title={!isHost ? "Viewers cannot add wins" : "Increment wins"}>
+              <button
+                onClick={addWin}
+                disabled={!isHost}
+                className={primaryButton}
+                title={!isHost ? "Viewers cannot add wins" : "Increment wins"}
+              >
                 +1 Win
               </button>
 
@@ -744,7 +981,7 @@ const createSession = useCallback(async () => {
           </div>
         </section>
 
-        {/* Player Stats table (UPDATED COLUMNS) */}
+        {/* Player Stats table */}
         <div className="overflow-x-auto rounded-2xl border border-[#2A2E32] bg-[#121418] shadow-sm">
           <table className="w-full text-left text-xs sm:text-sm">
             <thead className="bg-[#181B1F] text-slate-300 border-b border-[#2A2E32]">
@@ -800,8 +1037,6 @@ const createSession = useCallback(async () => {
               <tr className="border-t border-[#2A2E32] bg-[#181B1F] font-semibold text-slate-100">
                 <td className="px-4 py-3 text-slate-500">—</td>
                 <td className="px-4 py-3 text-slate-300">Totals / Avg</td>
-
-                {/* NOT SUMMING "Games" anymore */}
                 <td className="px-4 py-3 text-slate-500">—</td>
 
                 <td className="px-4 py-3">{players.reduce((acc, p) => acc + p.totalDamage, 0)}</td>
@@ -816,11 +1051,18 @@ const createSession = useCallback(async () => {
           </table>
         </div>
 
-        <p className="mt-3 text-[11px] text-slate-500">
-          Workflows: Host enters stats →{" "}
-          <span className="font-semibold text-slate-200">Add Game (All Rows)</span> to record a match. Viewers can add
-          RP for themselves once added to the season.
-        </p>
+        <div className="mt-6 flex flex-wrap items-center gap-3">
+          <button
+            onClick={postSessionToDiscord}
+            disabled={!isHost || discordPosting}
+            className={secondaryButton}
+            title={!isHost ? "Only host can post to Discord" : "Send the current session summary to Discord"}
+          >
+            {discordPosting ? "Posting..." : "Post Session to Discord"}
+          </button>
+
+          {discordErr && <div className="text-[11px] text-red-300">{discordErr}</div>}
+        </div>
       </div>
     </main>
   );
