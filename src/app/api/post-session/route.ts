@@ -1,45 +1,88 @@
-// app/api/post-session/route.ts
-import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  { auth: { persistSession: false } }
-);
-
-function randomKey(len = 40) {
-  const chars =
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-  return Array.from({ length: len }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+function supabaseAdmin() {
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) throw new Error('Missing Supabase env vars');
+  return createClient(url, key, { auth: { persistSession: false } });
 }
 
-export async function POST(req: Request) {
+// POST - Create new session
+export async function POST(request: NextRequest) {
   try {
-    const body = await req.json();
+    const body = await request.json();
+    const { seasonNumber, hostUserId, doc } = body;
 
+    if (!seasonNumber || !doc) {
+      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+    }
+
+    const supabase = supabaseAdmin();
     const sessionId = crypto.randomUUID();
-    const writeKey = randomKey();
+    const writeKey = crypto.randomUUID();
 
-    const { error } = await supabase.from("sessions").insert({
+    const { error } = await supabase.from('sessions').insert({
       id: sessionId,
-      season_number: body.seasonNumber,
+      season_number: seasonNumber,
+      host_user_id: hostUserId,
       write_key: writeKey,
-      doc: body.doc ?? {},
-      updated_at: new Date().toISOString(),
+      doc,
     });
 
-    if (error) throw error;
+    if (error) {
+      console.error('Failed to create session:', error);
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
 
-    return NextResponse.json({
-      ok: true,
-      sessionId,
-      writeKey,
-    });
-  } catch (e: any) {
-    return NextResponse.json(
-      { error: e?.message ?? "Failed to create session" },
-      { status: 400 }
-    );
+    return NextResponse.json({ sessionId, writeKey });
+  } catch (error) {
+    console.error('POST /api/post-session error:', error);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  }
+}
+
+// PUT - Update existing session
+export async function PUT(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const { sessionId, writeKey, doc } = body;
+
+    if (!sessionId || !doc) {
+      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+    }
+
+    const supabase = supabaseAdmin();
+
+    // Verify write key
+    const { data: session, error: fetchError } = await supabase
+      .from('sessions')
+      .select('write_key')
+      .eq('id', sessionId)
+      .maybeSingle();
+
+    if (fetchError || !session) {
+      return NextResponse.json({ error: 'Session not found' }, { status: 404 });
+    }
+
+    if (session.write_key !== writeKey) {
+      return NextResponse.json({ error: 'Invalid write key' }, { status: 403 });
+    }
+
+    // Update session
+    const { error: updateError } = await supabase
+      .from('sessions')
+      .update({ doc, updated_at: new Date().toISOString() })
+      .eq('id', sessionId);
+
+    if (updateError) {
+      console.error('Failed to update session:', updateError);
+      return NextResponse.json({ error: updateError.message }, { status: 500 });
+    }
+
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error('PUT /api/post-session error:', error);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

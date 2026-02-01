@@ -1,521 +1,418 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
-"use client";
+'use client';
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
-import { supabase } from "@/lib/supabase/client";
+import { useEffect, useState, useMemo, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import {
-  CartesianGrid,
-  Legend,
-  Line,
   LineChart,
-  ResponsiveContainer,
-  Tooltip,
+  Line,
   XAxis,
   YAxis,
-} from "recharts";
+  Tooltip,
+  Legend,
+  ResponsiveContainer,
+  CartesianGrid,
+  ReferenceLine,
+} from 'recharts';
+import { supabase } from '@/lib/supabase/client';
+import { getActiveSeason, type Season } from '@/lib/seasons';
+import { fetchMyProfile, type Profile } from '@/lib/auth';
 
-type SeasonRow = {
-  id: string;
-  host_user_id: string;
-  name: string | null;
-  is_active: boolean;
-  created_at: string;
-  season_number?: number | null;
+type SeasonPlayer = {
+  user_id: string;
+  display_name: string;
 };
 
-type ProfileRow = { display_name: string | null };
-
-type SeasonPlayerRow = {
+type RpEntry = {
   user_id: string;
-  profiles: ProfileRow | null;
-};
-
-type SnapshotRow = {
-  user_id: string;
-  post_date: string; // YYYY-MM-DD
+  entry_date: string;
   delta_rp: number;
 };
 
-type Player = { userId: string; name: string };
-
-type ChartPoint = {
-  date: string; // MM/DD/YY
-  __delta?: Record<string, number>; // per-player delta on that date (by display_name)
-  [k: string]: any; // dynamic player series by display_name
+type ChartDataPoint = {
+  date: string;
+  [key: string]: string | number;
 };
 
-function fmtMMDDYY(iso: string) {
-  // "2026-02-01" -> "02/01/26" in local (fine because we force midnight)
-  const d = new Date(iso + "T00:00:00");
-  return d.toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", year: "2-digit" });
+// Player colors for the graph lines
+const PLAYER_COLORS = [
+  '#E03A3E', // Red (primary)
+  '#3B82F6', // Blue
+  '#10B981', // Green
+  '#F59E0B', // Amber
+  '#8B5CF6', // Purple
+  '#EC4899', // Pink
+  '#06B6D4', // Cyan
+  '#F97316', // Orange
+];
+
+function formatDateLabel(isoDate: string): string {
+  const [year, month, day] = isoDate.split('-');
+  return `${month}/${day}/${year.slice(2)}`;
 }
 
-function safeName(v: string | null | undefined) {
-  const s = (v ?? "").trim();
-  return s.length ? s : "Unknown";
-}
+function getDateRange(entries: RpEntry[]): string[] {
+  if (entries.length === 0) return [];
 
-function classNames(...xs: Array<string | false | null | undefined>) {
-  return xs.filter(Boolean).join(" ");
-}
+  const dates = new Set(entries.map((e) => e.entry_date));
+  const sortedDates = Array.from(dates).sort();
 
-/**
- * Builds cumulative RP series by date from snapshot deltas.
- * Output:
- *  [
- *    { date: "02/01/26", "Sean": 200, __delta:{Sean:200} },
- *    { date: "02/02/26", "Sean": 100, __delta:{Sean:-100} },
- *  ]
- */
-function buildCumulativeSeriesFromSnapshots(rows: SnapshotRow[], players: Player[]): ChartPoint[] {
-  // group deltas by date then by user
-  const byDate: Record<string, Record<string, number>> = {};
-  for (const r of rows) {
-    const dateKey = fmtMMDDYY(r.post_date);
-    if (!byDate[dateKey]) byDate[dateKey] = {};
-    byDate[dateKey][r.user_id] = (byDate[dateKey][r.user_id] ?? 0) + (Number(r.delta_rp) || 0);
+  // Fill in gaps between dates
+  if (sortedDates.length < 2) return sortedDates;
+
+  const result: string[] = [];
+  const start = new Date(sortedDates[0]);
+  const end = new Date(sortedDates[sortedDates.length - 1]);
+
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    const iso = d.toISOString().split('T')[0];
+    result.push(iso);
   }
 
-  // sort dates chronologically
-  const dates = Object.keys(byDate).sort((a, b) => {
-    const [am, ad, ay] = a.split("/").map(Number);
-    const [bm, bd, by] = b.split("/").map(Number);
-    const da = new Date(2000 + ay, am - 1, ad).getTime();
-    const db = new Date(2000 + by, bm - 1, bd).getTime();
-    return da - db;
-  });
-
-  // cumulative totals per user id
-  const totals: Record<string, number> = {};
-  players.forEach((p) => (totals[p.userId] = 0));
-
-  const out: ChartPoint[] = [];
-
-  for (const d of dates) {
-    const deltaByUser = byDate[d] ?? {};
-    const point: ChartPoint = { date: d, __delta: {} };
-
-    for (const p of players) {
-      const delta = Number(deltaByUser[p.userId] ?? 0);
-      totals[p.userId] = (totals[p.userId] ?? 0) + delta;
-      point[p.name] = totals[p.userId];
-      point.__delta![p.name] = delta;
-    }
-
-    out.push(point);
-  }
-
-  return out;
-}
-
-function colorForIndex(i: number) {
-  const palette = ["#E03A3E", "#C9A86A", "#3B82F6", "#22C55E", "#A855F7", "#F97316"];
-  return palette[i % palette.length];
+  return result;
 }
 
 export default function SeasonProgressionPage() {
   const router = useRouter();
 
-  const [authUserName, setAuthUserName] = useState<string>("—");
-  const [season, setSeason] = useState<SeasonRow | null>(null);
-  const [isHost, setIsHost] = useState(false);
-
-  const [players, setPlayers] = useState<Player[]>([]);
-  const [chartData, setChartData] = useState<ChartPoint[]>([]);
-
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [season, setSeason] = useState<Season | null>(null);
+  const [players, setPlayers] = useState<SeasonPlayer[]>([]);
+  const [entries, setEntries] = useState<RpEntry[]>([]);
 
-  // Selection UI
-  const [allPlayers, setAllPlayers] = useState(true);
-  const [selected, setSelected] = useState<Record<string, boolean>>({}); // by display_name
+  // Checkbox state: 'all' or array of user_ids
+  const [selectedPlayers, setSelectedPlayers] = useState<'all' | string[]>('all');
 
-  // Taller by default
-  const [chartHeight, setChartHeight] = useState<number>(720);
+  const loadData = useCallback(async () => {
+    try {
+      setError(null);
 
-  const selectedNames = useMemo(() => {
-    if (allPlayers) return players.map((p) => p.name);
-    return players.map((p) => p.name).filter((n) => selected[n]);
-  }, [allPlayers, players, selected]);
+      const [profileData, seasonData] = await Promise.all([
+        fetchMyProfile(),
+        getActiveSeason(),
+      ]);
 
-  const playerColorMap = useMemo(() => {
-    const map: Record<string, string> = {};
-    players.forEach((p, idx) => (map[p.name] = colorForIndex(idx)));
-    return map;
-  }, [players]);
+      setProfile(profileData);
+      setSeason(seasonData);
 
-  const loadSeasonAndMe = useCallback(async () => {
-    const { data: sess, error: sessErr } = await supabase.auth.getSession();
-    if (sessErr) throw sessErr;
+      if (!seasonData) {
+        setLoading(false);
+        return;
+      }
 
-    const uid = sess.session?.user?.id;
-    if (!uid) {
-      router.replace("/");
-      return null;
+      // Get season players with profiles
+      const { data: playerData, error: playerError } = await supabase
+        .from('season_players')
+        .select(`
+          user_id,
+          profiles (
+            display_name
+          )
+        `)
+        .eq('season_id', seasonData.id);
+
+      if (playerError) throw playerError;
+
+      const playersList: SeasonPlayer[] = (playerData ?? []).map((p: Record<string, unknown>) => ({
+        user_id: p.user_id as string,
+        display_name: (p.profiles as Record<string, string>)?.display_name ?? 'Unknown',
+      }));
+
+      setPlayers(playersList);
+
+      // Get all RP entries for this season
+      const { data: rpData, error: rpError } = await supabase
+        .from('season_rp_entries')
+        .select('user_id, entry_date, delta_rp')
+        .eq('season_id', seasonData.id)
+        .order('entry_date', { ascending: true });
+
+      if (rpError) throw rpError;
+
+      setEntries((rpData ?? []) as RpEntry[]);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to load data';
+      setError(message);
+    } finally {
+      setLoading(false);
     }
-
-    const { data: me, error: meErr } = await supabase
-      .from("profiles")
-      .select("display_name")
-      .eq("id", uid)
-      .maybeSingle();
-
-    if (meErr) throw meErr;
-    setAuthUserName(safeName(me?.display_name));
-
-    const { data: s, error: seasonErr } = await supabase
-      .from("seasons")
-      .select("*")
-      .eq("is_active", true)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (seasonErr) throw seasonErr;
-    if (!s) throw new Error("No active season found.");
-
-    setSeason(s as SeasonRow);
-    setIsHost((s as SeasonRow).host_user_id === uid);
-
-    return { uid, seasonId: (s as SeasonRow).id };
-  }, [router]);
-
-  const loadPlayersAndSeries = useCallback(async (seasonId: string) => {
-    // season_players + profiles join
-    const { data: sp, error: spErr } = await supabase
-      .from("season_players")
-      .select(
-        `
-        user_id,
-        profiles:profiles ( display_name )
-      `
-      )
-      .eq("season_id", seasonId);
-
-    if (spErr) throw spErr;
-
-    const list: Player[] = (sp ?? []).map((r: any) => ({
-      userId: String(r.user_id),
-      name: safeName(r.profiles?.display_name),
-    }));
-
-    list.sort((a, b) => a.name.localeCompare(b.name));
-    setPlayers(list);
-
-    // init selection: all checked
-    const nextSelected: Record<string, boolean> = {};
-    list.forEach((p) => (nextSelected[p.name] = true));
-    setSelected(nextSelected);
-
-    // IMPORTANT: read from season_rp_snapshots (official, posted-only)
-    const { data: snap, error: snapErr } = await supabase
-      .from("season_rp_snapshots")
-      .select("user_id, post_date, delta_rp")
-      .eq("season_id", seasonId)
-      .order("post_date", { ascending: true })
-      .limit(5000);
-
-    if (snapErr) throw snapErr;
-
-    const rows: SnapshotRow[] = (snap ?? []).map((r: any) => ({
-      user_id: String(r.user_id),
-      post_date: String(r.post_date),
-      delta_rp: Number(r.delta_rp) || 0,
-    }));
-
-    const series = buildCumulativeSeriesFromSnapshots(rows, list);
-    setChartData(series);
   }, []);
 
-  const refreshAll = useCallback(async () => {
-    if (!season?.id) return;
-    setErr(null);
-    setRefreshing(true);
-    try {
-      await loadPlayersAndSeries(season.id);
-    } catch (e: any) {
-      setErr(e?.message ?? "Failed to refresh graph");
-    } finally {
-      setRefreshing(false);
-    }
-  }, [season?.id, loadPlayersAndSeries]);
-
-  const resetSeason = useCallback(async () => {
-    if (!season?.id) return;
-    if (!isHost) return;
-
-    const ok = window.confirm(
-      "Are you sure you want to reset the season graph?\n\nThis deletes ALL season_rp_snapshots for this season (official posted RP deltas)."
-    );
-    if (!ok) return;
-
-    setErr(null);
-    setRefreshing(true);
-    try {
-      // Delete snapshots (not rp_entries)
-      const { error } = await supabase.from("season_rp_snapshots").delete().eq("season_id", season.id);
-      if (error) throw error;
-
-      await loadPlayersAndSeries(season.id);
-    } catch (e: any) {
-      setErr(e?.message ?? "Failed to reset season");
-    } finally {
-      setRefreshing(false);
-    }
-  }, [season?.id, isHost, loadPlayersAndSeries]);
-
   useEffect(() => {
-    let active = true;
+    loadData();
+  }, [loadData]);
 
-    (async () => {
-      try {
-        setLoading(true);
-        setErr(null);
+  // Build chart data with cumulative RP
+  const chartData = useMemo((): ChartDataPoint[] => {
+    if (players.length === 0 || entries.length === 0) return [];
 
-        const boot = await loadSeasonAndMe();
-        if (!active) return;
-        if (!boot) return;
+    const dates = getDateRange(entries);
+    if (dates.length === 0) return [];
 
-        await loadPlayersAndSeries(boot.seasonId);
-      } catch (e: any) {
-        if (active) setErr(e?.message ?? "Failed to load graph");
-      } finally {
-        if (active) setLoading(false);
+    // Group entries by date and user
+    const entriesByDateUser: Record<string, Record<string, number>> = {};
+    for (const entry of entries) {
+      if (!entriesByDateUser[entry.entry_date]) {
+        entriesByDateUser[entry.entry_date] = {};
       }
-    })();
+      const current = entriesByDateUser[entry.entry_date][entry.user_id] ?? 0;
+      entriesByDateUser[entry.entry_date][entry.user_id] = current + entry.delta_rp;
+    }
 
-    return () => {
-      active = false;
-    };
-  }, [loadSeasonAndMe, loadPlayersAndSeries]);
+    // Build cumulative data
+    const cumulative: Record<string, number> = {};
+    players.forEach((p) => (cumulative[p.user_id] = 0));
 
-  // checkbox behavior: if allPlayers checked, disable others
-  const toggleAll = () => {
-    setAllPlayers((v) => {
-      const next = !v;
-      if (next === false) {
-        const any = Object.values(selected).some(Boolean);
-        if (!any && players.length) {
-          setSelected((prev) => ({ ...prev, [players[0].name]: true }));
-        }
+    return dates.map((date) => {
+      const point: ChartDataPoint = { date: formatDateLabel(date) };
+
+      for (const player of players) {
+        const dayDelta = entriesByDateUser[date]?.[player.user_id] ?? 0;
+        cumulative[player.user_id] += dayDelta;
+        point[player.display_name] = cumulative[player.user_id];
       }
-      return next;
-    });
-  };
 
-  const toggleName = (name: string) => {
-    if (allPlayers) return;
-    setSelected((prev) => {
-      const next = { ...prev, [name]: !prev[name] };
-      if (!Object.values(next).some(Boolean)) return prev;
-      return next;
+      return point;
     });
-  };
+  }, [entries, players]);
 
-  const page = "min-h-screen bg-[#050608] text-slate-100 px-4 py-8";
-  const container = "mx-auto max-w-[1300px]";
-  const card = "rounded-2xl border border-[#2A2E32] bg-[#121418] shadow-sm";
-  const cardPad = "p-4 sm:p-5";
-  const title = "text-3xl sm:text-4xl font-extrabold tracking-tight text-[#E03A3E]";
-  const btnPrimary =
-    "cursor-pointer inline-flex items-center justify-center rounded-xl border border-[#E03A3E] bg-[#E03A3E] px-4 py-2 text-xs sm:text-sm font-semibold text-white shadow-sm hover:bg-[#B71C1C] hover:border-[#B71C1C] transition disabled:opacity-50 disabled:cursor-not-allowed";
+  // Get visible players based on selection
+  const visiblePlayers = useMemo(() => {
+    if (selectedPlayers === 'all') return players;
+    return players.filter((p) => selectedPlayers.includes(p.user_id));
+  }, [players, selectedPlayers]);
+
+  // Handle checkbox changes
+  function handleAllChange(checked: boolean) {
+    if (checked) {
+      setSelectedPlayers('all');
+    } else {
+      setSelectedPlayers([]);
+    }
+  }
+
+  function handlePlayerChange(userId: string, checked: boolean) {
+    if (selectedPlayers === 'all') {
+      // Switching from 'all' to individual selection
+      if (checked) {
+        setSelectedPlayers([userId]);
+      } else {
+        setSelectedPlayers(players.filter((p) => p.user_id !== userId).map((p) => p.user_id));
+      }
+    } else {
+      if (checked) {
+        setSelectedPlayers([...selectedPlayers, userId]);
+      } else {
+        setSelectedPlayers(selectedPlayers.filter((id) => id !== userId));
+      }
+    }
+  }
+
+  // Styles
   const btnGhost =
-    "cursor-pointer inline-flex items-center justify-center rounded-xl border border-[#2A2E32] bg-[#181B1F] px-4 py-2 text-xs sm:text-sm font-semibold text-slate-200 shadow-sm hover:bg-[#20242A] hover:border-[#E03A3E] transition disabled:opacity-50 disabled:cursor-not-allowed";
+    'cursor-pointer inline-flex items-center justify-center rounded-xl border border-[#2A2E32] bg-[#181B1F] px-4 py-3 text-sm font-semibold text-slate-200 shadow-sm hover:bg-[#20242A] hover:border-[#E03A3E] transition';
 
   if (loading) {
     return (
-      <main className={page}>
-        <div className={classNames(container, "grid place-items-center")}>
-          <div className="text-sm text-slate-400">Loading…</div>
+      <main className="min-h-screen bg-[#050608] text-slate-100 px-4 py-10 grid place-items-center">
+        <div className="text-sm text-slate-400">Loading…</div>
+      </main>
+    );
+  }
+
+  if (!profile) {
+    return (
+      <main className="min-h-screen bg-[#050608] text-slate-100 px-4 py-10 grid place-items-center">
+        <div className="text-center">
+          <div className="text-lg font-semibold mb-2">Not signed in</div>
+          <p className="text-sm text-slate-400 mb-4">
+            Please sign in to view season progression.
+          </p>
+          <button onClick={() => router.push('/')} className={btnGhost}>
+            Go Home
+          </button>
+        </div>
+      </main>
+    );
+  }
+
+  if (!season) {
+    return (
+      <main className="min-h-screen bg-[#050608] text-slate-100 px-4 py-10 grid place-items-center">
+        <div className="text-center">
+          <div className="text-lg font-semibold mb-2">No active season</div>
+          <p className="text-sm text-slate-400 mb-4">
+            Set a season on the home page to start tracking.
+          </p>
+          <button onClick={() => router.push('/')} className={btnGhost}>
+            Go Home
+          </button>
         </div>
       </main>
     );
   }
 
   return (
-    <main className={page}>
-      <div className={container}>
-        <header className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+    <main className="min-h-screen bg-[#050608] text-slate-100 px-4 py-10">
+      <div className="max-w-6xl mx-auto">
+        {/* Header */}
+        <div className="flex items-start justify-between mb-8">
           <div>
-            <div className="uppercase tracking-[0.35em] text-[10px] text-slate-500 mb-2">Apex Legends</div>
-            <h1 className={title}>Season Progression</h1>
-            <div className="mt-2 text-xs text-slate-400">
-              Signed in as <span className="text-slate-200 font-semibold">{authUserName}</span>
-              {"  •  "}
-              Season{" "}
-              <span className="text-slate-200 font-semibold">
-                {season?.season_number ?? (season?.name ?? (season?.id ? season.id.slice(0, 8) : "—"))}
-              </span>
-              {"  •  "}
-              Role:{" "}
-              <span className={classNames("font-semibold", isHost ? "text-[#E03A3E]" : "text-slate-200")}>
-                {isHost ? "Host" : "Player"}
-              </span>
+            <div className="uppercase tracking-[0.35em] text-[10px] text-slate-500 mb-2">
+              Apex Legends
             </div>
-            <div className="mt-1 text-[11px] text-slate-500">
-              Graph updates only when the host clicks <span className="text-slate-200 font-semibold">Post Session to Discord</span>.
-            </div>
+            <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight text-[#E03A3E]">
+              Season {season.season_number} Progression
+            </h1>
+            <p className="mt-2 text-sm text-slate-400">
+              Cumulative RP gains throughout the season
+            </p>
           </div>
+          <button onClick={() => router.push('/')} className={btnGhost}>
+            Home
+          </button>
+        </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <button className={btnGhost} onClick={refreshAll} disabled={refreshing}>
-              {refreshing ? "Refreshing…" : "Refresh graph"}
-            </button>
-
-            <button
-              className={btnGhost}
-              onClick={resetSeason}
-              disabled={refreshing || !isHost}
-              title={!isHost ? "Only the host can reset the season" : "Delete all snapshots for this season"}
-            >
-              Reset season
-            </button>
-
-            <button className={btnGhost} onClick={() => router.push("/")} disabled={refreshing}>
-              Back to Home
-            </button>
-          </div>
-        </header>
-
-        {err && (
-          <div className="mb-4 rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">
-            {err}
+        {/* Error */}
+        {error && (
+          <div className="mb-6 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+            {error}
           </div>
         )}
 
-        {/* Player selection + chart height */}
-        <section className={classNames(card, "mb-4")}>
-          <div className={cardPad}>
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <div className="text-sm font-semibold text-slate-100">Player Selection</div>
-                <div className="mt-1 text-[11px] text-slate-500">
-                  All Players disables individual selection. Y-axis is fixed -5000 to 5000.
-                </div>
-              </div>
+        {/* Player Filters */}
+        <div className="rounded-2xl border border-[#2A2E32] bg-[#121418] p-4 mb-6">
+          <div className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400 mb-3">
+            Filter Players
+          </div>
+          <div className="flex flex-wrap gap-4">
+            {/* All checkbox */}
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={selectedPlayers === 'all'}
+                onChange={(e) => handleAllChange(e.target.checked)}
+                className="w-4 h-4 rounded border-[#2A2E32] bg-[#0E1115] text-[#E03A3E] focus:ring-[#E03A3E] focus:ring-offset-0"
+              />
+              <span className="text-sm text-slate-200 font-medium">All</span>
+            </label>
 
-              <div className="flex items-center gap-3">
-                <div className="text-[11px] text-slate-400">Chart height</div>
-                <input
-                  type="range"
-                  min={520}
-                  max={980}
-                  value={chartHeight}
-                  onChange={(e) => setChartHeight(Number(e.target.value))}
-                  className="cursor-pointer w-40"
-                />
-                <div className="text-[11px] text-slate-400 w-[52px] text-right">{chartHeight}px</div>
-              </div>
-            </div>
-
-            <div className="mt-3 flex flex-wrap items-center gap-4">
-              <label className="flex items-center gap-2 text-sm">
+            {/* Individual player checkboxes */}
+            {players.map((player, idx) => (
+              <label key={player.user_id} className="flex items-center gap-2 cursor-pointer">
                 <input
                   type="checkbox"
-                  checked={allPlayers}
-                  onChange={toggleAll}
-                  className="cursor-pointer h-4 w-4 accent-[#E03A3E]"
+                  checked={
+                    selectedPlayers === 'all' || selectedPlayers.includes(player.user_id)
+                  }
+                  disabled={selectedPlayers === 'all'}
+                  onChange={(e) => handlePlayerChange(player.user_id, e.target.checked)}
+                  className="w-4 h-4 rounded border-[#2A2E32] bg-[#0E1115] text-[#E03A3E] focus:ring-[#E03A3E] focus:ring-offset-0 disabled:opacity-50"
                 />
-                <span className="font-semibold text-slate-100">All Players</span>
+                <span
+                  className="text-sm font-medium"
+                  style={{ color: PLAYER_COLORS[idx % PLAYER_COLORS.length] }}
+                >
+                  {player.display_name}
+                </span>
               </label>
-
-              {players.length === 0 ? (
-                <div className="text-sm text-slate-500">No season players yet.</div>
-              ) : (
-                <div className="flex flex-wrap items-center gap-4">
-                  {players.map((p) => (
-                    <label key={p.userId} className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={allPlayers ? true : !!selected[p.name]}
-                        disabled={allPlayers}
-                        onChange={() => toggleName(p.name)}
-                        className={classNames(
-                          "h-4 w-4 accent-[#E03A3E]",
-                          allPlayers ? "cursor-not-allowed opacity-40" : "cursor-pointer"
-                        )}
-                      />
-                      <span className={classNames(allPlayers ? "text-slate-600" : "text-slate-200")}>
-                        {p.name}
-                      </span>
-                    </label>
-                  ))}
-                </div>
-              )}
-            </div>
+            ))}
           </div>
-        </section>
+        </div>
 
         {/* Chart */}
-        <section className={card}>
-          <div className={cardPad}>
-            <div className="text-sm font-semibold text-slate-100">Ranked RP Over Time</div>
-            <div className="mt-1 text-[11px] text-slate-500">
-              X-axis dates are MM/DD/YY (diagonal). Tooltip shows cumulative value and that day’s posted delta.
+        <div className="rounded-2xl border border-[#2A2E32] bg-[#121418] p-6">
+          {chartData.length === 0 ? (
+            <div className="text-center py-20">
+              <div className="text-lg font-semibold text-slate-300 mb-2">
+                No RP data yet
+              </div>
+              <p className="text-sm text-slate-500">
+                RP will appear here after sessions are posted from the In-Game Tracker.
+              </p>
             </div>
-          </div>
+          ) : (
+            <div style={{ width: '100%', height: 500 }}>
+              <ResponsiveContainer>
+                <LineChart
+                  data={chartData}
+                  margin={{ top: 20, right: 30, bottom: 60, left: 20 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="#2A2E32" />
+                  <XAxis
+                    dataKey="date"
+                    tick={{ fontSize: 11, fill: '#94a3b8' }}
+                    angle={-45}
+                    textAnchor="end"
+                    height={60}
+                    interval={0}
+                  />
+                  <YAxis
+                    domain={[-5000, 5000]}
+                    tick={{ fontSize: 11, fill: '#94a3b8' }}
+                    tickFormatter={(v) => (v > 0 ? `+${v}` : String(v))}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: '#121418',
+                      border: '1px solid #2A2E32',
+                      borderRadius: '8px',
+                    }}
+                    labelStyle={{ color: '#94a3b8' }}
+                  />
+                  <Legend />
+                  <ReferenceLine y={0} stroke="#4B5563" strokeDasharray="3 3" />
 
-          <div className="px-4 pb-5">
-            <div
-              className="w-full rounded-2xl border border-[#2A2E32] bg-[#0E1115] p-3"
-              style={{ height: chartHeight }}
-            >
-              {chartData.length === 0 || selectedNames.length === 0 ? (
-                <div className="h-full w-full grid place-items-center text-sm text-slate-500">
-                  No posted RP snapshots yet. Have the host Post Session to Discord.
-                </div>
-              ) : (
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={chartData}>
-                    <CartesianGrid strokeDasharray="3 3" opacity={0.2} />
-                    <XAxis
-                      dataKey="date"
-                      angle={-35}
-                      textAnchor="end"
-                      height={70}
-                      tick={{ fill: "#94A3B8", fontSize: 12 }}
-                    />
-                    <YAxis
-                      domain={[-5000, 5000]}
-                      tick={{ fill: "#94A3B8", fontSize: 12 }}
-                      tickCount={11}
-                    />
-                    <Tooltip
-                      contentStyle={{
-                        background: "#0B0D11",
-                        border: "1px solid #2A2E32",
-                        borderRadius: "12px",
-                        color: "#E2E8F0",
-                        fontSize: "12px",
-                      }}
-                      formatter={(value: any, name: any, props: any) => {
-                        const delta = props?.payload?.__delta?.[name] ?? 0;
-                        const sign = delta > 0 ? "+" : "";
-                        return [`${value} (${sign}${delta})`, name];
-                      }}
-                      labelStyle={{ color: "#CBD5E1" }}
-                    />
-                    <Legend />
-
-                    {selectedNames.map((name) => (
+                  {visiblePlayers.map((player, idx) => {
+                    const playerIndex = players.findIndex(
+                      (p) => p.user_id === player.user_id
+                    );
+                    return (
                       <Line
-                        key={name}
+                        key={player.user_id}
                         type="monotone"
-                        dataKey={name}
-                        stroke={playerColorMap[name]}
-                        strokeWidth={3}
-                        dot={{ r: 3 }}
+                        dataKey={player.display_name}
+                        stroke={PLAYER_COLORS[playerIndex % PLAYER_COLORS.length]}
+                        strokeWidth={2}
+                        dot={{ r: 4 }}
                         activeDot={{ r: 6 }}
                       />
-                    ))}
-                  </LineChart>
-                </ResponsiveContainer>
-              )}
+                    );
+                  })}
+                </LineChart>
+              </ResponsiveContainer>
             </div>
+          )}
+        </div>
+
+        {/* Stats Summary */}
+        {players.length > 0 && chartData.length > 0 && (
+          <div className="mt-6 grid grid-cols-2 sm:grid-cols-4 gap-4">
+            {players.map((player, idx) => {
+              const lastPoint = chartData[chartData.length - 1];
+              const totalRp = (lastPoint?.[player.display_name] as number) ?? 0;
+              return (
+                <div
+                  key={player.user_id}
+                  className="rounded-xl border border-[#2A2E32] bg-[#121418] p-4"
+                >
+                  <div
+                    className="text-sm font-medium mb-1"
+                    style={{ color: PLAYER_COLORS[idx % PLAYER_COLORS.length] }}
+                  >
+                    {player.display_name}
+                  </div>
+                  <div className="text-2xl font-bold text-slate-100">
+                    {totalRp > 0 ? '+' : ''}
+                    {totalRp}
+                  </div>
+                  <div className="text-xs text-slate-500">Total RP</div>
+                </div>
+              );
+            })}
           </div>
-        </section>
+        )}
       </div>
     </main>
   );

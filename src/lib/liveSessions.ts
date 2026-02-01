@@ -1,0 +1,456 @@
+import { supabase } from '@/lib/supabase/client';
+import { getCurrentUserId } from '@/lib/auth';
+import { getActiveSeason } from '@/lib/seasons';
+
+export type LiveSession = {
+  id: string;
+  season_id: string;
+  host_user_id: string;
+  is_active: boolean;
+  created_at: string;
+  ended_at: string | null;
+};
+
+export type LiveSessionPlayer = {
+  id: string;
+  live_session_id: string;
+  user_id: string;
+  current_rp: number;
+  joined_at: string;
+  display_name?: string;
+};
+
+export type GameStat = {
+  id: string;
+  live_session_id: string;
+  game_number: number;
+  created_at: string;
+};
+
+export type PlayerGameStat = {
+  id: string;
+  game_stat_id: string;
+  user_id: string;
+  damage: number;
+  kills: number;
+  created_at: string;
+  display_name?: string;
+};
+
+/**
+ * Create a new live session (makes current user the host)
+ */
+export async function createLiveSession(): Promise<LiveSession> {
+  const userId = await getCurrentUserId();
+  if (!userId) throw new Error('Must be logged in to create a session');
+
+  const season = await getActiveSeason();
+  if (!season) throw new Error('No active season');
+
+  const { data, error } = await supabase
+    .from('live_sessions')
+    .insert({
+      season_id: season.id,
+      host_user_id: userId,
+      is_active: true,
+    })
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data as LiveSession;
+}
+
+/**
+ * Get a live session by ID
+ */
+export async function getLiveSession(sessionId: string): Promise<LiveSession | null> {
+  const { data, error } = await supabase
+    .from('live_sessions')
+    .select('*')
+    .eq('id', sessionId)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data as LiveSession | null;
+}
+
+/**
+ * End a live session (host only)
+ */
+export async function endLiveSession(sessionId: string): Promise<void> {
+  const { error } = await supabase
+    .from('live_sessions')
+    .update({ is_active: false, ended_at: new Date().toISOString() })
+    .eq('id', sessionId);
+
+  if (error) throw error;
+}
+
+/**
+ * Add a player to the live session
+ */
+export async function addPlayerToSession(
+  sessionId: string,
+  userId: string
+): Promise<LiveSessionPlayer> {
+  const { data, error } = await supabase
+    .from('live_session_players')
+    .insert({
+      live_session_id: sessionId,
+      user_id: userId,
+      current_rp: 0,
+    })
+    .select()
+    .single();
+
+  if (error) {
+    if (error.code === '23505') {
+      throw new Error('Player already in session');
+    }
+    throw error;
+  }
+  return data as LiveSessionPlayer;
+}
+
+/**
+ * Get all players in a live session with their profiles
+ */
+export async function getSessionPlayers(
+  sessionId: string
+): Promise<LiveSessionPlayer[]> {
+  const { data, error } = await supabase
+    .from('live_session_players')
+    .select(`
+      *,
+      profiles (
+        display_name
+      )
+    `)
+    .eq('live_session_id', sessionId);
+
+  if (error) throw error;
+
+  return (data ?? []).map((p: Record<string, unknown>) => ({
+    ...p,
+    display_name: (p.profiles as Record<string, string>)?.display_name ?? 'Unknown',
+  })) as LiveSessionPlayer[];
+}
+
+/**
+ * Update a player's RP in the session
+ */
+export async function updatePlayerRp(
+  sessionId: string,
+  odlRp: number,
+  newRp: number
+): Promise<void> {
+  const userId = await getCurrentUserId();
+  if (!userId) throw new Error('Must be logged in');
+
+  const { error } = await supabase
+    .from('live_session_players')
+    .update({ current_rp: newRp })
+    .eq('live_session_id', sessionId)
+    .eq('user_id', userId);
+
+  if (error) throw error;
+}
+
+/**
+ * Add a new game to the session
+ */
+export async function addGame(sessionId: string, gameNumber: number): Promise<GameStat> {
+  const { data, error } = await supabase
+    .from('game_stats')
+    .insert({
+      live_session_id: sessionId,
+      game_number: gameNumber,
+    })
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data as GameStat;
+}
+
+/**
+ * Get all games for a session
+ */
+export async function getSessionGames(sessionId: string): Promise<GameStat[]> {
+  const { data, error } = await supabase
+    .from('game_stats')
+    .select('*')
+    .eq('live_session_id', sessionId)
+    .order('game_number', { ascending: true });
+
+  if (error) throw error;
+  return (data ?? []) as GameStat[];
+}
+
+/**
+ * Add or update player stats for a game
+ */
+export async function upsertPlayerGameStats(
+  gameStatId: string,
+  userId: string,
+  damage: number,
+  kills: number
+): Promise<PlayerGameStat> {
+  const { data, error } = await supabase
+    .from('player_game_stats')
+    .upsert(
+      {
+        game_stat_id: gameStatId,
+        user_id: userId,
+        damage,
+        kills,
+      },
+      { onConflict: 'game_stat_id,user_id' }
+    )
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data as PlayerGameStat;
+}
+
+/**
+ * Get all player stats for a game
+ */
+export async function getGamePlayerStats(
+  gameStatId: string
+): Promise<PlayerGameStat[]> {
+  const { data, error } = await supabase
+    .from('player_game_stats')
+    .select(`
+      *,
+      profiles (
+        display_name
+      )
+    `)
+    .eq('game_stat_id', gameStatId);
+
+  if (error) throw error;
+
+  return (data ?? []).map((p: Record<string, unknown>) => ({
+    ...p,
+    display_name: (p.profiles as Record<string, string>)?.display_name ?? 'Unknown',
+  })) as PlayerGameStat[];
+}
+
+/**
+ * Get aggregated stats for the entire session
+ */
+export async function getSessionAggregatedStats(sessionId: string): Promise<{
+  totalGames: number;
+  playerStats: {
+    user_id: string;
+    display_name: string;
+    total_damage: number;
+    total_kills: number;
+    games_1k: number; // games with 1000+ damage
+    games_2k: number; // games with 2000+ damage
+    donuts: number; // games with 0 damage and 0 kills
+    current_rp: number;
+  }[];
+}> {
+  // Get all games
+  const games = await getSessionGames(sessionId);
+  
+  // Get all players
+  const players = await getSessionPlayers(sessionId);
+  
+  // Get all player game stats
+  const allStats: PlayerGameStat[] = [];
+  for (const game of games) {
+    const stats = await getGamePlayerStats(game.id);
+    allStats.push(...stats);
+  }
+
+  // Aggregate per player
+  const playerStatsMap: Record<string, {
+    total_damage: number;
+    total_kills: number;
+    games_1k: number;
+    games_2k: number;
+    donuts: number;
+  }> = {};
+
+  for (const player of players) {
+    playerStatsMap[player.user_id] = {
+      total_damage: 0,
+      total_kills: 0,
+      games_1k: 0,
+      games_2k: 0,
+      donuts: 0,
+    };
+  }
+
+  for (const stat of allStats) {
+    if (!playerStatsMap[stat.user_id]) continue;
+    
+    playerStatsMap[stat.user_id].total_damage += stat.damage;
+    playerStatsMap[stat.user_id].total_kills += stat.kills;
+    
+    if (stat.damage >= 2000) {
+      playerStatsMap[stat.user_id].games_2k += 1;
+    } else if (stat.damage >= 1000) {
+      playerStatsMap[stat.user_id].games_1k += 1;
+    }
+    
+    if (stat.damage === 0 && stat.kills === 0) {
+      playerStatsMap[stat.user_id].donuts += 1;
+    }
+  }
+
+  return {
+    totalGames: games.length,
+    playerStats: players.map((p) => ({
+      user_id: p.user_id,
+      display_name: p.display_name ?? 'Unknown',
+      current_rp: p.current_rp,
+      ...playerStatsMap[p.user_id],
+    })),
+  };
+}
+
+/**
+ * Post session results to Discord and save RP to season
+ */
+export async function postSessionToDiscord(sessionId: string): Promise<void> {
+  const userId = await getCurrentUserId();
+  if (!userId) throw new Error('Must be logged in');
+
+  const session = await getLiveSession(sessionId);
+  if (!session) throw new Error('Session not found');
+
+  const season = await getActiveSeason();
+  if (!season) throw new Error('No active season');
+
+  // Get aggregated stats
+  const stats = await getSessionAggregatedStats(sessionId);
+
+  // Build Discord message
+  const lines: string[] = [
+    `**Apex Session Results - Season ${season.season_number}**`,
+    `Games Played: ${stats.totalGames}`,
+    '',
+    '**Player Stats:**',
+  ];
+
+  for (const player of stats.playerStats) {
+    lines.push(`**${player.display_name}**`);
+    lines.push(`• Damage: ${player.total_damage.toLocaleString()}`);
+    lines.push(`• Kills: ${player.total_kills}`);
+    lines.push(`• 1k Games: ${player.games_1k}`);
+    lines.push(`• 2k Games: ${player.games_2k}`);
+    lines.push(`• Donuts: ${player.donuts}`);
+    lines.push(`• RP: ${player.current_rp > 0 ? '+' : ''}${player.current_rp}`);
+    lines.push('');
+  }
+
+  const payload = {
+    content: lines.join('\n'),
+  };
+
+  // Post to Discord via API route
+  const response = await fetch('/api/discord', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionId,
+      payload,
+    }),
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to post to Discord');
+  }
+
+  // Save RP entries to season_rp_entries
+  const today = new Date().toISOString().split('T')[0];
+  
+  for (const player of stats.playerStats) {
+    if (player.current_rp === 0) continue; // Skip if no RP change
+
+    const { error } = await supabase.from('season_rp_entries').insert({
+      season_id: season.id,
+      user_id: player.user_id,
+      delta_rp: player.current_rp,
+      entry_date: today,
+      posted_from_session_id: sessionId,
+    });
+
+    if (error) throw error;
+  }
+
+  // Log the discord post
+  const { error: logError } = await supabase.from('discord_posts').insert({
+    live_session_id: sessionId,
+    posted_by: userId,
+    payload,
+  });
+
+  if (logError) throw logError;
+
+  // End the session
+  await endLiveSession(sessionId);
+}
+
+/**
+ * Subscribe to real-time updates for a session
+ */
+export function subscribeToSession(
+  sessionId: string,
+  onPlayersChange: () => void,
+  onGamesChange: () => void
+): () => void {
+  const playersChannel = supabase
+    .channel(`session-players-${sessionId}`)
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'live_session_players',
+        filter: `live_session_id=eq.${sessionId}`,
+      },
+      () => onPlayersChange()
+    )
+    .subscribe();
+
+  const gamesChannel = supabase
+    .channel(`session-games-${sessionId}`)
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'game_stats',
+        filter: `live_session_id=eq.${sessionId}`,
+      },
+      () => onGamesChange()
+    )
+    .subscribe();
+
+  const statsChannel = supabase
+    .channel(`session-stats-${sessionId}`)
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'player_game_stats',
+      },
+      () => onGamesChange()
+    )
+    .subscribe();
+
+  return () => {
+    supabase.removeChannel(playersChannel);
+    supabase.removeChannel(gamesChannel);
+    supabase.removeChannel(statsChannel);
+  };
+}

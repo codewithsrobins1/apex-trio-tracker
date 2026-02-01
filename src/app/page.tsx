@@ -1,140 +1,151 @@
-/* eslint-disable react/no-unescaped-entities */
-"use client";
+'use client';
 
-import { useEffect, useMemo, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
-import { supabase } from "@/lib/supabase/client";
-
-function normalizeInt(v: string) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return null;
-  if (!Number.isInteger(n)) return null;
-  if (n < 0 || n > 9999) return null;
-  return n;
-}
+import { useEffect, useState, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
+import AuthForm from '@/components/AuthForm';
+import ConfirmModal from '@/components/ConfirmModal';
+import {
+  fetchMyProfile,
+  logout,
+  onAuthStateChange,
+  type Profile,
+} from '@/lib/auth';
+import {
+  getActiveSeason,
+  setActiveSeason,
+  resetCurrentSeason,
+  deactivateSeason,
+  joinActiveSeason,
+  type Season,
+} from '@/lib/seasons';
 
 export default function Home() {
   const router = useRouter();
-  const search = useSearchParams();
 
-  const [booting, setBooting] = useState(true);
-  const [signedInName, setSignedInName] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
+  // Auth state
+  const [loading, setLoading] = useState(true);
+  const [profile, setProfile] = useState<Profile | null>(null);
 
-  // season input (numbers only)
-  const [seasonInput, setSeasonInput] = useState<string>(() => {
-    if (typeof window === "undefined") return "27";
-    return localStorage.getItem("apex:seasonNumber") ?? "27";
-  });
+  // Season state
+  const [season, setSeason] = useState<Season | null>(null);
+  const [seasonInput, setSeasonInput] = useState('28');
+  const [seasonLoading, setSeasonLoading] = useState(false);
 
-  // join by ID
-  const [joinId, setJoinId] = useState<string>("");
+  // Error state
+  const [error, setError] = useState<string | null>(null);
 
-  const seasonNumber = useMemo(() => normalizeInt(seasonInput), [seasonInput]);
+  // Confirmation modals
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
 
-  useEffect(() => {
-    let active = true;
-
-    (async () => {
-      try {
-        setErr(null);
-
-        // Show username if you have profiles table + anon auth already
-        const { data: sess } = await supabase.auth.getSession();
-        const uid = sess.session?.user?.id ?? null;
-
-        if (uid) {
-          const { data: p } = await supabase
-            .from("profiles")
-            .select("display_name")
-            .eq("id", uid)
-            .maybeSingle();
-
-          if (!active) return;
-          if (p?.display_name) setSignedInName(p.display_name);
-        }
-
-        // Optional: if user visits /?s=<sessionId>, auto-join
-        const s = search.get("s");
-        if (s) {
-          router.push(`/in-game-tracker?s=${encodeURIComponent(s)}`);
-          return;
-        }
-      } catch (e: any) {
-        if (active) setErr(e?.message ?? "Failed to load");
-      } finally {
-        if (active) setBooting(false);
-      }
-    })();
-
-    return () => {
-      active = false;
-    };
-  }, [router, search]);
-
-  function persistSeason() {
-    if (seasonNumber == null) {
-      setErr("Season must be a whole number (e.g. 27).");
-      return false;
-    }
-    localStorage.setItem("apex:seasonNumber", String(seasonNumber));
-    return true;
-  }
-
-  async function startSession() {
-    setErr(null);
-    if (!persistSeason()) return;
-
+  // Load initial data
+  const loadData = useCallback(async () => {
     try {
-      const res = await fetch("/api/post-session", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          seasonNumber,
-          doc: {
-            // minimal initial doc; tracker page owns schema
-            players: [],
-            sessionGames: 0,
-            wins: 0,
-          },
-        }),
-      });
+      setError(null);
+      const [profileData, seasonData] = await Promise.all([
+        fetchMyProfile(),
+        getActiveSeason(),
+      ]);
+      setProfile(profileData);
+      setSeason(seasonData);
+      if (seasonData) {
+        setSeasonInput(String(seasonData.season_number));
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to load';
+      setError(message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
-      const json = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(json?.error || "Failed to create session");
+  // Initial load + auth listener
+  useEffect(() => {
+    loadData();
 
-      const sessionId = json.sessionId as string;
-      const writeKey = json.writeKey as string;
+    const unsubscribe = onAuthStateChange(() => {
+      loadData();
+    });
 
-      if (!sessionId || !writeKey) throw new Error("Missing sessionId/writeKey from server");
+    return unsubscribe;
+  }, [loadData]);
 
-      // this is the entire host/viewer system
-      localStorage.setItem(`apex:session:${sessionId}:writeKey`, writeKey);
+  // Handle auth success
+  async function handleAuthSuccess() {
+    setLoading(true);
+    await loadData();
+  }
 
-      router.push(`/in-game-tracker?s=${encodeURIComponent(sessionId)}`);
-    } catch (e: any) {
-      setErr(e?.message ?? "Failed to start session");
+  // Handle logout
+  async function handleLogout() {
+    try {
+      await logout();
+      setProfile(null);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Logout failed';
+      setError(message);
     }
   }
 
-  function joinSession() {
-    setErr(null);
-    const id = joinId.trim();
-    if (!id) {
-      setErr("Paste a session id.");
+  // Handle set season
+  async function handleSetSeason() {
+    const num = parseInt(seasonInput, 10);
+    if (isNaN(num) || num < 1) {
+      setError('Please enter a valid season number');
       return;
     }
-    router.push(`/in-game-tracker?s=${encodeURIComponent(id)}`);
+
+    setSeasonLoading(true);
+    setError(null);
+
+    try {
+      const newSeason = await setActiveSeason(num);
+      setSeason(newSeason);
+
+      // Auto-join the season
+      await joinActiveSeason();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to set season';
+      setError(message);
+    } finally {
+      setSeasonLoading(false);
+    }
   }
 
-  const card = "w-full max-w-[780px] rounded-2xl border border-[#2A2E32] bg-[#121418] p-6 shadow-sm";
-  const title = "text-4xl sm:text-6xl font-extrabold tracking-tight text-[#E03A3E]";
-  const btnPrimary =
-    "cursor-pointer inline-flex items-center justify-center rounded-xl border border-[#E03A3E] bg-[#E03A3E] px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-[#B71C1C] hover:border-[#B71C1C] transition disabled:opacity-50 disabled:cursor-not-allowed";
-  const btnGhost =
-    "cursor-pointer inline-flex items-center justify-center rounded-xl border border-[#2A2E32] bg-[#181B1F] px-4 py-3 text-sm font-semibold text-slate-200 shadow-sm hover:bg-[#20242A] hover:border-[#E03A3E] transition disabled:opacity-50 disabled:cursor-not-allowed";
+  // Handle reset season (after confirmation)
+  async function handleResetSeason() {
+    setShowResetConfirm(false);
+    setSeasonLoading(true);
+    setError(null);
 
-  if (booting) {
+    try {
+      await resetCurrentSeason();
+      await deactivateSeason();
+      setSeason(null);
+      setSeasonInput('28');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to reset season';
+      setError(message);
+    } finally {
+      setSeasonLoading(false);
+    }
+  }
+
+  // Styles
+  const card =
+    'w-full rounded-2xl border border-[#2A2E32] bg-[#121418] p-6 shadow-sm';
+  const title =
+    'text-4xl sm:text-6xl font-extrabold tracking-tight text-[#E03A3E]';
+  const btnPrimary =
+    'cursor-pointer inline-flex items-center justify-center rounded-xl border border-[#E03A3E] bg-[#E03A3E] px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-[#B71C1C] hover:border-[#B71C1C] transition disabled:opacity-50 disabled:cursor-not-allowed';
+  const btnGhost =
+    'cursor-pointer inline-flex items-center justify-center rounded-xl border border-[#2A2E32] bg-[#181B1F] px-4 py-3 text-sm font-semibold text-slate-200 shadow-sm hover:bg-[#20242A] hover:border-[#E03A3E] transition disabled:opacity-50 disabled:cursor-not-allowed';
+  const btnDanger =
+    'cursor-pointer inline-flex items-center justify-center rounded-xl border border-red-600/50 bg-red-600/10 px-4 py-3 text-sm font-semibold text-red-400 shadow-sm hover:bg-red-600/20 hover:border-red-600 transition disabled:opacity-50 disabled:cursor-not-allowed';
+  const inputClass =
+    'w-full sm:w-32 rounded-xl border border-[#2A2E32] bg-[#0E1115] px-4 py-3 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-[#E03A3E] focus:ring-1 focus:ring-[#E03A3E] disabled:opacity-50 disabled:cursor-not-allowed';
+
+  // Loading state
+  if (loading) {
     return (
       <main className="min-h-screen bg-[#050608] text-slate-100 px-4 py-10 grid place-items-center">
         <div className="text-sm text-slate-400">Loading…</div>
@@ -142,126 +153,168 @@ export default function Home() {
     );
   }
 
+  // Not logged in - show auth form
+  if (!profile) {
+    return (
+      <main className="min-h-screen bg-[#050608] text-slate-100 px-4 py-10">
+        <div className="max-w-md mx-auto">
+          <div className="text-center mb-8">
+            <div className="uppercase tracking-[0.35em] text-[10px] text-slate-500 mb-2">
+              Apex Legends
+            </div>
+            <h1 className={title}>Trio Tracker</h1>
+            <p className="mt-3 text-sm text-slate-400">
+              Sign in to start tracking with your squad.
+            </p>
+          </div>
+
+          <AuthForm onSuccess={handleAuthSuccess} />
+        </div>
+      </main>
+    );
+  }
+
+  // Logged in - show main dashboard
   return (
-    <main className="min-h-screen bg-[#050608] text-slate-100 px-4 py-10 grid place-items-center">
-      <div className="w-full max-w-[900px]">
-        <div className="text-center mb-6">
-          <div className="uppercase tracking-[0.35em] text-[10px] text-slate-500 mb-2">Apex Legends</div>
-          <h1 className={title}>Apex Trio Tracker</h1>
+    <main className="min-h-screen bg-[#050608] text-slate-100 px-4 py-10">
+      <div className="max-w-2xl mx-auto">
+        {/* Header */}
+        <div className="text-center mb-8">
+          <div className="uppercase tracking-[0.35em] text-[10px] text-slate-500 mb-2">
+            Apex Legends
+          </div>
+          <h1 className={title}>Trio Tracker</h1>
           <p className="mt-3 text-sm text-slate-400">
-            {signedInName ? (
-              <>
-                You’re signed in as <span className="text-slate-100 font-semibold">{signedInName}</span>.
-              </>
-            ) : (
-              <>Choose a season and start a session.</>
-            )}
+            You&apos;re signed in as{' '}
+            <span className="text-slate-100 font-semibold">
+              {profile.display_name}
+            </span>
           </p>
         </div>
 
-        <div className="mx-auto grid place-items-center">
-          <div className={card}>
-            {err && <div className="mb-3 text-sm text-red-300">{err}</div>}
-
-            <div className="grid gap-4">
-              {/* Season number */}
-              <div className="rounded-xl border border-[#2A2E32] bg-[#181B1F] p-4">
-                <div className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400 mb-2">
-                  Current Season Number
-                </div>
-
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                  <input
-                    value={seasonInput}
-                    onChange={(e) => setSeasonInput(e.target.value)}
-                    onBlur={() => {
-                      setErr(null);
-                      persistSeason();
-                    }}
-                    placeholder="e.g. 27"
-                    inputMode="numeric"
-                    className="w-full sm:w-40 rounded-xl border border-[#2A2E32] bg-[#0E1115] px-4 py-3 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-[#E03A3E] focus:ring-1 focus:ring-[#E03A3E]"
-                  />
-
-                  <button
-                    type="button"
-                    className={btnGhost}
-                    onClick={() => {
-                      setErr(null);
-                      if (persistSeason()) setErr(null);
-                    }}
-                    title="Save season number for this browser"
-                  >
-                    Save Season
-                  </button>
-
-                  <div className="text-[11px] text-slate-500">
-                    Seasons are just numbers (27, 28, …). Stored locally in this browser.
-                  </div>
-                </div>
-              </div>
-
-              {/* Start session */}
-              <div className="grid gap-2 sm:grid-cols-2">
-                <button type="button" className={btnPrimary} onClick={startSession} disabled={seasonNumber == null}>
-                  Start Session (Host)
-                </button>
-
-                <button
-                  type="button"
-                  className={btnGhost}
-                  onClick={() => router.push("/season-progression")}
-                  title="Go to the season progression graph"
-                >
-                  Season Progression
-                </button>
-              </div>
-
-              {/* Join session */}
-              <div className="rounded-xl border border-[#2A2E32] bg-[#181B1F] p-4">
-                <div className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400 mb-2">
-                  Join a Session (Viewer)
-                </div>
-
-                <div className="flex flex-col gap-2 sm:flex-row">
-                  <input
-                    value={joinId}
-                    onChange={(e) => setJoinId(e.target.value)}
-                    placeholder="Paste session id"
-                    className="w-full rounded-xl border border-[#2A2E32] bg-[#0E1115] px-4 py-3 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-[#E03A3E] focus:ring-1 focus:ring-[#E03A3E]"
-                  />
-                  <button type="button" className={btnGhost} onClick={joinSession}>
-                    Join
-                  </button>
-                </div>
-
-                <div className="mt-2 text-[11px] text-slate-500">
-                  Viewers can watch, but cannot save without the write key (only host has it).
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-4 flex items-center justify-between">
-              <button
-                type="button"
-                className="cursor-pointer text-[11px] text-slate-300 hover:text-white underline underline-offset-4"
-                onClick={async () => {
-                  setErr(null);
-                  try {
-                    await supabase.auth.signOut();
-                  } catch {}
-                  setSignedInName(null);
-                }}
-                title="Sign out"
-              >
-                Sign out
-              </button>
-
-              <div className="text-[11px] text-slate-500">Host is determined by writeKey in localStorage.</div>
-            </div>
+        {/* Error */}
+        {error && (
+          <div className="mb-6 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+            {error}
           </div>
+        )}
+
+        {/* Season Card */}
+        <div className={card}>
+          <div className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400 mb-4">
+            Current Season
+          </div>
+
+          {season ? (
+            // Season is set
+            <div>
+              <div className="flex items-center gap-4 mb-4">
+                <div className="text-3xl font-bold text-[#E03A3E]">
+                  Season {season.season_number}
+                </div>
+                <div className="text-sm text-slate-500">Active</div>
+              </div>
+
+              <div className="flex flex-wrap gap-3">
+                <input
+                  type="number"
+                  value={seasonInput}
+                  disabled
+                  className={inputClass}
+                />
+                <button disabled className={btnPrimary}>
+                  Set Season
+                </button>
+                <button
+                  onClick={() => setShowResetConfirm(true)}
+                  disabled={seasonLoading}
+                  className={btnDanger}
+                >
+                  {seasonLoading ? 'Resetting…' : 'Reset Season'}
+                </button>
+              </div>
+
+              <p className="mt-3 text-xs text-slate-500">
+                To change seasons, you must reset first. This will clear all RP
+                data for this season.
+              </p>
+            </div>
+          ) : (
+            // No season set
+            <div>
+              <p className="text-sm text-slate-400 mb-4">
+                No season is currently active. Set a season to start tracking.
+              </p>
+
+              <div className="flex flex-wrap gap-3">
+                <input
+                  type="number"
+                  value={seasonInput}
+                  onChange={(e) => setSeasonInput(e.target.value)}
+                  placeholder="28"
+                  min={1}
+                  className={inputClass}
+                />
+                <button
+                  onClick={handleSetSeason}
+                  disabled={seasonLoading || !seasonInput}
+                  className={btnPrimary}
+                >
+                  {seasonLoading ? 'Setting…' : 'Set Season'}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Navigation Cards */}
+        <div className="grid sm:grid-cols-2 gap-4 mt-6">
+          <button
+            onClick={() => router.push('/in-game-tracker')}
+            disabled={!season}
+            className={`${card} text-left hover:border-[#E03A3E] transition disabled:opacity-50 disabled:cursor-not-allowed`}
+          >
+            <div className="text-lg font-bold text-slate-100">
+              In-Game Tracker
+            </div>
+            <p className="mt-1 text-sm text-slate-400">
+              Start a session and track stats with your squad in real-time.
+            </p>
+          </button>
+
+          <button
+            onClick={() => router.push('/season-progression')}
+            disabled={!season}
+            className={`${card} text-left hover:border-[#E03A3E] transition disabled:opacity-50 disabled:cursor-not-allowed`}
+          >
+            <div className="text-lg font-bold text-slate-100">
+              Season Progression
+            </div>
+            <p className="mt-1 text-sm text-slate-400">
+              View the RP graph showing everyone&apos;s progress this season.
+            </p>
+          </button>
+        </div>
+
+        {/* Sign out */}
+        <div className="mt-8 text-center">
+          <button onClick={handleLogout} className={btnGhost}>
+            Sign Out
+          </button>
         </div>
       </div>
+
+      {/* Reset Confirmation Modal */}
+      <ConfirmModal
+        isOpen={showResetConfirm}
+        title="Reset Season?"
+        message="This will delete all RP entries for this season and deactivate it. Everyone's progress will be reset to 0. This cannot be undone."
+        confirmText="Yes, Reset"
+        cancelText="Cancel"
+        onConfirm={handleResetSeason}
+        onCancel={() => setShowResetConfirm(false)}
+        variant="danger"
+      />
     </main>
   );
 }
