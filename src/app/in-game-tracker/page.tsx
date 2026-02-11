@@ -778,7 +778,7 @@ function InGameTrackerContent() {
         // STEP 3A: Auto-register player to season if not already registered
         const { data: existingSeasonPlayer, error: checkError } = await supabase
           .from('season_players')
-          .select('id')
+          .select('season_id')
           .eq('season_id', season.id)
           .eq('user_id', player.odlierId)
           .maybeSingle();
