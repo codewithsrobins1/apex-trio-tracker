@@ -714,33 +714,49 @@ function InGameTrackerContent() {
 
   // UPDATED: postToDiscord with fresh data fetch and proper RP accumulation
   const postToDiscord = async () => {
-    if (!season || !sessionId) return;
+    console.log('🚀 postToDiscord called!', { season, sessionId });
+    if (!season) {
+      console.error('❌ Missing season', { season });
+      showNotificationModal('Error', 'No active season found', 'error');
+      return;
+    }
     try {
       setPosting(true);
       setError(null);
       
-      // STEP 1: Fetch fresh session data from database
-      const { data: freshSessionData, error: fetchError } = await supabase
-        .from('sessions')
-        .select('*')
-        .eq('id', sessionId)
-        .maybeSingle();
-
-      if (fetchError) throw fetchError;
-      if (!freshSessionData) throw new Error('Session not found');
-
-      const freshDoc = freshSessionData.doc as SessionDoc;
+      // Determine which data to use
+      let dataToPost: SessionDoc;
       
-      // Use fresh data for Discord post
+      if (sessionId) {
+        // STEP 1A: Has session - Fetch fresh session data from database
+        console.log('📡 Fetching fresh session data...');
+        const { data: freshSessionData, error: fetchError } = await supabase
+          .from('sessions')
+          .select('*')
+          .eq('id', sessionId)
+          .maybeSingle();
+
+        if (fetchError) throw fetchError;
+        if (!freshSessionData) throw new Error('Session not found');
+
+        dataToPost = freshSessionData.doc as SessionDoc;
+      } else {
+        // STEP 1B: No session - Use current local state
+        console.log('📊 Using local state (no session saved)');
+        dataToPost = currentDoc;
+      }
+      
+      // Use data for Discord post
+      // Use data for Discord post
       const avgPlacement =
-        freshDoc.sessionGames > 0 ? (freshDoc.totalPlacement / freshDoc.sessionGames).toFixed(1) : '0';
+        dataToPost.sessionGames > 0 ? (dataToPost.totalPlacement / dataToPost.sessionGames).toFixed(1) : '0';
       const lines: string[] = [
         `**Apex Session Summary — Season ${season.season_number}**`,
-        `Games: ${freshDoc.sessionGames} | Wins: ${freshDoc.wins} | Avg Placement: ${avgPlacement}`,
+        `Games: ${dataToPost.sessionGames} | Wins: ${dataToPost.wins} | Avg Placement: ${avgPlacement}`,
         '',
       ];
       
-      freshDoc.players.forEach((p, i) => {
+      dataToPost.players.forEach((p, i) => {
         const avgDmg = p.games > 0 ? (p.totalDamage / p.games).toFixed(0) : '0';
         lines.push(`**#${i + 1} ${p.name || '(no name)'}**`);
         lines.push(
@@ -753,7 +769,7 @@ function InGameTrackerContent() {
         lines.push('');
       });
       
-      const totalSquadRP = freshDoc.players.reduce((acc, p) => acc + p.totalRP, 0);
+      const totalSquadRP = dataToPost.players.reduce((acc, p) => acc + p.totalRP, 0);
       lines.push(
         `**Squad Total RP: ${totalSquadRP > 0 ? '+' : ''}${totalSquadRP}**`
       );
@@ -772,7 +788,7 @@ function InGameTrackerContent() {
       const successMessages: string[] = [];
       const errorMessages: string[] = [];
 
-      for (const player of freshDoc.players) {
+      for (const player of dataToPost.players) {
         if (!player.odlierId) continue; // Skip unregistered players (no odlierId)
 
         // STEP 3A: Auto-register player to season if not already registered
