@@ -15,7 +15,10 @@ export async function POST(request: NextRequest) {
     const { seasonNumber, hostUserId, doc } = body;
 
     if (!seasonNumber || !doc) {
-      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+      return NextResponse.json(
+        { error: 'Missing required fields' },
+        { status: 400 }
+      );
     }
 
     const supabase = supabaseAdmin();
@@ -38,7 +41,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ sessionId, writeKey });
   } catch (error) {
     console.error('POST /api/post-session error:', error);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
   }
 }
 
@@ -46,15 +52,18 @@ export async function POST(request: NextRequest) {
 export async function PUT(request: NextRequest) {
   try {
     const body = await request.json();
-    const { sessionId, writeKey, doc } = body;
+    const { sessionId, writeKey, doc, playerIdUpdating } = body;
 
     if (!sessionId || !doc) {
-      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+      return NextResponse.json(
+        { error: 'Missing required fields' },
+        { status: 400 }
+      );
     }
 
     const supabase = supabaseAdmin();
 
-    // Verify write key
+    // Fetch the session
     const { data: session, error: fetchError } = await supabase
       .from('sessions')
       .select('write_key')
@@ -65,7 +74,14 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: 'Session not found' }, { status: 404 });
     }
 
-    if (session.write_key !== writeKey) {
+    // Check authorization
+    const isHost = writeKey && session.write_key === writeKey;
+    const isPlayerUpdatingOwnRP = playerIdUpdating && !isHost;
+
+    // Allow update if:
+    // 1. User is host (has valid writeKey) OR
+    // 2. User is a player updating their own RP (has playerIdUpdating)
+    if (!isHost && !isPlayerUpdatingOwnRP) {
       return NextResponse.json({ error: 'Invalid write key' }, { status: 403 });
     }
 
@@ -83,6 +99,9 @@ export async function PUT(request: NextRequest) {
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error('PUT /api/post-session error:', error);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
   }
 }
