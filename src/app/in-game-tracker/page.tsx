@@ -57,6 +57,7 @@ type SessionDoc = {
   wins: number;
   totalPlacement: number;
   placements: number[];
+  lastUpdated?: string;
 };
 
 function InGameTrackerContent() {
@@ -105,12 +106,58 @@ function InGameTrackerContent() {
   const [showNewSessionConfirm, setShowNewSessionConfirm] = useState(false);
   const [showPostConfirm, setShowPostConfirm] = useState(false);
   const [showAddPlayer, setShowAddPlayer] = useState(false);
-  const [selectedPlayerIds, setSelectedPlayerIds] = useState<string[]>([]); // Changed to array for multi-select
+  const [selectedPlayerIds, setSelectedPlayerIds] = useState<string[]>([]);
   const [posting, setPosting] = useState(false);
   const [copied, setCopied] = useState(false);
   const [modalError, setModalError] = useState<string | null>(null);
+  
+  // NEW: Notification modal state
+  const [showNotification, setShowNotification] = useState(false);
+  const [notificationTitle, setNotificationTitle] = useState('');
+  const [notificationMessage, setNotificationMessage] = useState('');
+  const [notificationType, setNotificationType] = useState<'success' | 'error' | 'info'>('info');
+  
+  // NEW: Refresh state
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
+  const autoRefreshInterval = useRef<NodeJS.Timeout | null>(null);
 
   const MAX_PLAYERS = 3;
+
+  // Helper to show notification modal
+  const showNotificationModal = (title: string, message: string, type: 'success' | 'error' | 'info' = 'info') => {
+    setNotificationTitle(title);
+    setNotificationMessage(message);
+    setNotificationType(type);
+    setShowNotification(true);
+  };
+
+  // Helper to save full state to localStorage
+  const saveToLocalStorage = useCallback((sessionId: string, doc: SessionDoc) => {
+    try {
+      localStorage.setItem(
+        `apex:session:${sessionId}:fullState`,
+        JSON.stringify({
+          ...doc,
+          lastUpdated: new Date().toISOString(),
+        })
+      );
+    } catch (err) {
+      console.error('Failed to save to localStorage:', err);
+    }
+  }, []);
+
+  // Helper to load from localStorage
+  const loadFromLocalStorage = useCallback((sessionId: string): SessionDoc | null => {
+    try {
+      const stored = localStorage.getItem(`apex:session:${sessionId}:fullState`);
+      if (!stored) return null;
+      return JSON.parse(stored);
+    } catch (err) {
+      console.error('Failed to load from localStorage:', err);
+      return null;
+    }
+  }, []);
 
   const loadData = useCallback(async () => {
     try {
@@ -148,8 +195,16 @@ function InGameTrackerContent() {
           setIsHost(isHostUser);
           setSessionId(sessionIdFromUrl);
 
+          // Try to load from localStorage first
+          const localData = loadFromLocalStorage(sessionIdFromUrl);
+          
+          // Use database data but merge with localStorage if available and newer
+          const finalDoc = localData && localData.lastUpdated && new Date(localData.lastUpdated) > new Date(sessionData.updated_at)
+            ? localData
+            : doc;
+
           setPlayers(
-            doc.players.map((p) => ({
+            finalDoc.players.map((p) => ({
               ...makeNewPlayer(p.odlierId, p.name),
               odlId: p.odlId,
               odlierId: p.odlierId,
@@ -163,10 +218,12 @@ function InGameTrackerContent() {
               totalRP: p.totalRP,
             }))
           );
-          setSessionGames(doc.sessionGames);
-          setWins(doc.wins);
-          setTotalPlacement(doc.totalPlacement);
-          setPlacements(doc.placements || []);
+          setSessionGames(finalDoc.sessionGames);
+          setWins(finalDoc.wins);
+          setTotalPlacement(finalDoc.totalPlacement);
+          setPlacements(finalDoc.placements || []);
+          
+          setLastRefreshed(new Date());
         }
       } else {
         setPlayers([makeNewPlayer(profileData.id, profileData.display_name)]);
@@ -178,11 +235,76 @@ function InGameTrackerContent() {
     } finally {
       setLoading(false);
     }
-  }, [sessionIdFromUrl, makeNewPlayer]);
+  }, [sessionIdFromUrl, makeNewPlayer, loadFromLocalStorage]);
 
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  // NEW: Manual refresh function
+  const handleRefresh = async () => {
+    if (!sessionId) return;
+    
+    setRefreshing(true);
+    try {
+      const { data: sessionData, error: sessionError } = await supabase
+        .from('sessions')
+        .select('*')
+        .eq('id', sessionId)
+        .maybeSingle();
+
+      if (sessionError) throw sessionError;
+
+      if (sessionData) {
+        const doc = sessionData.doc as SessionDoc;
+        
+        setPlayers(
+          doc.players.map((p) => ({
+            ...makeNewPlayer(p.odlierId, p.name),
+            odlId: p.odlId,
+            odlierId: p.odlierId,
+            name: p.name,
+            games: p.games,
+            totalDamage: p.totalDamage,
+            totalKills: p.totalKills,
+            oneKGames: p.oneKGames,
+            twoKGames: p.twoKGames,
+            donuts: p.donuts,
+            totalRP: p.totalRP,
+          }))
+        );
+        setSessionGames(doc.sessionGames);
+        setWins(doc.wins);
+        setTotalPlacement(doc.totalPlacement);
+        setPlacements(doc.placements || []);
+        
+        setLastRefreshed(new Date());
+        
+        // Save to localStorage
+        saveToLocalStorage(sessionId, doc);
+      }
+    } catch (err) {
+      console.error('Failed to refresh:', err);
+      showNotificationModal('Refresh Failed', 'Could not fetch latest data', 'error');
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  // NEW: Auto-refresh every 60 seconds
+  useEffect(() => {
+    if (!sessionId || isHost) return; // Only auto-refresh for non-hosts
+    
+    autoRefreshInterval.current = setInterval(() => {
+      handleRefresh();
+    }, 60000); // 60 seconds
+
+    return () => {
+      if (autoRefreshInterval.current) {
+        clearInterval(autoRefreshInterval.current);
+      }
+    };
+  }, [sessionId, isHost]);
 
   const currentDoc: SessionDoc = useMemo(
     () => ({
@@ -226,6 +348,9 @@ function InGameTrackerContent() {
           body: JSON.stringify({ sessionId, writeKey, doc: currentDoc }),
         });
         lastSavedDoc.current = docString;
+        
+        // Save to localStorage as backup
+        saveToLocalStorage(sessionId, currentDoc);
       } catch (err) {
         console.error('Failed to save session:', err);
       }
@@ -234,7 +359,7 @@ function InGameTrackerContent() {
     return () => {
       if (saveTimer.current) clearTimeout(saveTimer.current);
     };
-  }, [currentDoc, sessionId]);
+  }, [currentDoc, sessionId, saveToLocalStorage]);
 
   useEffect(() => {
     if (!sessionId || isHost) return;
@@ -290,7 +415,6 @@ function InGameTrackerContent() {
     };
   }, [sessionId, isHost, profile?.id, makeNewPlayer, players]);
 
-  // Add player to selection
   const addToSelection = (playerId: string) => {
     if (selectedPlayerIds.length + players.length >= MAX_PLAYERS) {
       setModalError(`Maximum ${MAX_PLAYERS} players allowed`);
@@ -301,13 +425,11 @@ function InGameTrackerContent() {
     setSelectedPlayerIds((prev) => [...prev, playerId]);
   };
 
-  // Remove player from selection
   const removeFromSelection = (playerId: string) => {
     setModalError(null);
     setSelectedPlayerIds((prev) => prev.filter((id) => id !== playerId));
   };
 
-  // Confirm adding all selected players
   const confirmAddPlayers = () => {
     if (!isHost) return;
     
@@ -326,7 +448,6 @@ function InGameTrackerContent() {
     setModalError(null);
   };
 
-  // Cancel and reset
   const cancelAddPlayers = () => {
     setShowAddPlayer(false);
     setSelectedPlayerIds([]);
@@ -437,24 +558,70 @@ function InGameTrackerContent() {
     if (last.placement === 1) setWins((w) => Math.max(0, w - 1));
   };
 
-  const commitRP = (odlId: string) => {
+  // UPDATED: commitRP now saves to database immediately
+  const commitRP = async (odlId: string) => {
     const player = players.find((p) => p.odlId === odlId);
     if (!player) return;
     if (!isHost && player.odlierId !== profile?.id) return;
     const delta = Number(player.rpInput);
     if (!Number.isFinite(delta) || player.rpInput === '') return;
+    
+    const newTotalRP = player.totalRP + delta;
+    const newRPHistory = [...player.rpHistory, delta];
+    
+    // Update local state first
     setPlayers((prev) =>
       prev.map((pl) =>
         pl.odlId === odlId
           ? {
               ...pl,
-              totalRP: pl.totalRP + delta,
-              rpHistory: [...pl.rpHistory, delta],
+              totalRP: newTotalRP,
+              rpHistory: newRPHistory,
               rpInput: '',
             }
           : pl
       )
     );
+
+    // Save to database immediately
+    if (sessionId && player.odlierId) {
+      try {
+        // Update the session doc with new RP
+        const updatedPlayers = players.map((pl) =>
+          pl.odlId === odlId
+            ? { ...pl, totalRP: newTotalRP }
+            : pl
+        );
+        
+        const updatedDoc = {
+          ...currentDoc,
+          players: updatedPlayers.map((p) => ({
+            odlId: p.odlId,
+            odlierId: p.odlierId,
+            name: p.name,
+            games: p.games,
+            totalDamage: p.totalDamage,
+            totalKills: p.totalKills,
+            oneKGames: p.oneKGames,
+            twoKGames: p.twoKGames,
+            donuts: p.donuts,
+            totalRP: p.totalRP,
+          })),
+        };
+
+        const writeKey = localStorage.getItem(`apex:session:${sessionId}:writeKey`);
+        await fetch('/api/post-session', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId, writeKey, doc: updatedDoc }),
+        });
+        
+        // Save to localStorage
+        saveToLocalStorage(sessionId, updatedDoc);
+      } catch (err) {
+        console.error('Failed to save RP to database:', err);
+      }
+    }
   };
 
   const undoRP = (odlId: string) => {
@@ -533,19 +700,35 @@ function InGameTrackerContent() {
     }
   };
 
+  // UPDATED: postToDiscord with fresh data fetch and proper RP accumulation
   const postToDiscord = async () => {
-    if (!season) return;
+    if (!season || !sessionId) return;
     try {
       setPosting(true);
       setError(null);
+      
+      // STEP 1: Fetch fresh session data from database
+      const { data: freshSessionData, error: fetchError } = await supabase
+        .from('sessions')
+        .select('*')
+        .eq('id', sessionId)
+        .maybeSingle();
+
+      if (fetchError) throw fetchError;
+      if (!freshSessionData) throw new Error('Session not found');
+
+      const freshDoc = freshSessionData.doc as SessionDoc;
+      
+      // Use fresh data for Discord post
       const avgPlacement =
-        sessionGames > 0 ? (totalPlacement / sessionGames).toFixed(1) : '0';
+        freshDoc.sessionGames > 0 ? (freshDoc.totalPlacement / freshDoc.sessionGames).toFixed(1) : '0';
       const lines: string[] = [
         `**Apex Session Summary — Season ${season.season_number}**`,
-        `Games: ${sessionGames} | Wins: ${wins} | Avg Placement: ${avgPlacement}`,
+        `Games: ${freshDoc.sessionGames} | Wins: ${freshDoc.wins} | Avg Placement: ${avgPlacement}`,
         '',
       ];
-      players.forEach((p, i) => {
+      
+      freshDoc.players.forEach((p, i) => {
         const avgDmg = p.games > 0 ? (p.totalDamage / p.games).toFixed(0) : '0';
         lines.push(`**#${i + 1} ${p.name || '(no name)'}**`);
         lines.push(
@@ -557,11 +740,13 @@ function InGameTrackerContent() {
         lines.push(`• Session RP: ${p.totalRP > 0 ? '+' : ''}${p.totalRP}`);
         lines.push('');
       });
-      const totalSquadRP = players.reduce((acc, p) => acc + p.totalRP, 0);
+      
+      const totalSquadRP = freshDoc.players.reduce((acc, p) => acc + p.totalRP, 0);
       lines.push(
         `**Squad Total RP: ${totalSquadRP > 0 ? '+' : ''}${totalSquadRP}**`
       );
 
+      // STEP 2: Post to Discord
       const res = await fetch('/api/discord', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -570,43 +755,74 @@ function InGameTrackerContent() {
       if (!res.ok)
         throw new Error((await res.text()) || 'Failed to post to Discord');
 
+      // STEP 3: Save RP to graph (with accumulation for same day)
       const today = new Date().toISOString().split('T')[0];
-      const warnings: string[] = [];
+      const successMessages: string[] = [];
+      const errorMessages: string[] = [];
 
-      for (const player of players) {
+      for (const player of freshDoc.players) {
         if (player.totalRP === 0) continue;
+        if (!player.odlierId) continue; // Skip unregistered players
 
-        if (!player.odlierId) {
-          warnings.push(
-            `⚠️ ${player.name || 'Unknown player'} is not a registered player - RP not saved to graph`
-          );
-          continue;
-        }
-
-        const { error: insertError } = await supabase
+        // Check if entry exists for today
+        const { data: existing } = await supabase
           .from('season_rp_entries')
-          .insert({
-            season_id: season.id,
-            user_id: player.odlierId,
-            delta_rp: player.totalRP,
-            entry_date: today,
-          });
+          .select('id, delta_rp')
+          .eq('season_id', season.id)
+          .eq('user_id', player.odlierId)
+          .eq('entry_date', today)
+          .maybeSingle();
 
-        if (insertError) {
-          console.error(`Failed to save RP for ${player.name}:`, insertError);
-          warnings.push(`⚠️ Failed to save RP for ${player.name || 'player'}`);
+        if (existing) {
+          // UPDATE: Add to existing RP
+          const newDeltaRP = existing.delta_rp + player.totalRP;
+          const { error: updateError } = await supabase
+            .from('season_rp_entries')
+            .update({ delta_rp: newDeltaRP })
+            .eq('id', existing.id);
+
+          if (updateError) {
+            console.error(`Failed to update RP for ${player.name}:`, updateError);
+            errorMessages.push(`Failed to update ${player.name}`);
+          } else {
+            successMessages.push(`${player.name}: ${player.totalRP >= 0 ? '+' : ''}${player.totalRP} RP (Total today: ${newDeltaRP >= 0 ? '+' : ''}${newDeltaRP})`);
+          }
+        } else {
+          // INSERT: Create new entry
+          const { error: insertError } = await supabase
+            .from('season_rp_entries')
+            .insert({
+              season_id: season.id,
+              user_id: player.odlierId,
+              delta_rp: player.totalRP,
+              entry_date: today,
+            });
+
+          if (insertError) {
+            console.error(`Failed to save RP for ${player.name}:`, insertError);
+            errorMessages.push(`Failed to save ${player.name}`);
+          } else {
+            successMessages.push(`${player.name}: ${player.totalRP >= 0 ? '+' : ''}${player.totalRP} RP`);
+          }
         }
       }
 
       setShowPostConfirm(false);
 
-      if (warnings.length > 0) {
-        alert('Posted to Discord ✅\n\n' + warnings.join('\n'));
-      } else {
-        alert('Posted to Discord ✅');
-      }
+      // Show in-app notification
+      const title = errorMessages.length > 0 ? 'Posted with Warnings' : 'Success!';
+      const message = [
+        'Posted to Discord ✅',
+        '',
+        ...successMessages,
+        ...(errorMessages.length > 0 ? ['', '⚠️ Errors:', ...errorMessages] : [])
+      ].join('\n');
+      
+      showNotificationModal(title, message, errorMessages.length > 0 ? 'error' : 'success');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to post');
+      const message = err instanceof Error ? err.message : 'Failed to post';
+      showNotificationModal('Error', message, 'error');
+      setError(message);
     } finally {
       setPosting(false);
     }
@@ -632,7 +848,6 @@ function InGameTrackerContent() {
     [players]
   );
 
-  // Get available and selected profiles
   const availableProfiles = useMemo(() => {
     const currentPlayerIds = players.map((p) => p.odlierId).filter((id): id is string => id !== null);
     return allProfiles.filter(
@@ -711,6 +926,17 @@ function InGameTrackerContent() {
         onConfirm={postToDiscord}
         onCancel={() => setShowPostConfirm(false)}
       />
+      
+      {/* NEW: Notification Modal */}
+      <ConfirmModal
+        isOpen={showNotification}
+        title={notificationTitle}
+        message={notificationMessage}
+        confirmText="OK"
+        onConfirm={() => setShowNotification(false)}
+        onCancel={() => setShowNotification(false)}
+        variant={notificationType === 'error' ? 'danger' : 'default'}
+      />
 
       <div className="mx-auto max-w-[1300px]">
         <header className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
@@ -740,8 +966,24 @@ function InGameTrackerContent() {
                 </>
               )}
             </p>
+            {/* NEW: Last Refreshed Indicator */}
+            {lastRefreshed && !isHost && (
+              <p className="mt-1 text-xs text-slate-500">
+                Last updated: {lastRefreshed.toLocaleTimeString()}
+              </p>
+            )}
           </div>
           <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+            {/* NEW: Refresh Button for non-hosts */}
+            {!isHost && sessionId && (
+              <button
+                onClick={handleRefresh}
+                disabled={refreshing}
+                className={secondaryButton}
+              >
+                {refreshing ? '🔄 Refreshing...' : '🔄 Refresh Tracker'}
+              </button>
+            )}
             {isHost && (
               <>
                 <button
@@ -783,7 +1025,6 @@ function InGameTrackerContent() {
           </div>
         )}
 
-        {/* NEW DUAL-PANEL ADD PLAYER MODAL */}
         {showAddPlayer && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
             <div className="w-full max-w-3xl rounded-lg bg-[#121418] border border-[#2A2E32] shadow-lg">
@@ -797,7 +1038,6 @@ function InGameTrackerContent() {
               </div>
               
               <div className="p-6">
-                {/* Error message inside modal */}
                 {modalError && (
                   <div className="mb-4 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
                     {modalError}
@@ -805,7 +1045,6 @@ function InGameTrackerContent() {
                 )}
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  {/* LEFT PANEL - Available Players */}
                   <div>
                     <h3 className="text-sm font-semibold text-slate-300 mb-3">
                       Available Players
@@ -838,7 +1077,6 @@ function InGameTrackerContent() {
                     </div>
                   </div>
 
-                  {/* RIGHT PANEL - Selected Players */}
                   <div>
                     <h3 className="text-sm font-semibold text-slate-300 mb-3">
                       Selected Players ({selectedProfiles.length})
@@ -1026,7 +1264,7 @@ function InGameTrackerContent() {
           </h2>
           <p className="text-[11px] text-slate-500 mb-3">
             Each player tracks their own RP. Enter RP change per match (can be
-            negative).
+            negative). Updates save immediately.
           </p>
           <div className="grid gap-3">
             {players.map((p, idx) => {
