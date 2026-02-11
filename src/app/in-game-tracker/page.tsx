@@ -121,6 +121,9 @@ function InGameTrackerContent() {
   const [refreshing, setRefreshing] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
   const autoRefreshInterval = useRef<NodeJS.Timeout | null>(null);
+  
+  // NEW: Saving RP state
+  const [savingRP, setSavingRP] = useState<string | null>(null); // odlId of player being saved
 
   const MAX_PLAYERS = 3;
 
@@ -558,7 +561,7 @@ function InGameTrackerContent() {
     if (last.placement === 1) setWins((w) => Math.max(0, w - 1));
   };
 
-  // UPDATED: commitRP now saves to database immediately
+  // UPDATED: commitRP now saves to database immediately with correct data
   const commitRP = async (odlId: string) => {
     const player = players.find((p) => p.odlId === odlId);
     if (!player) return;
@@ -568,6 +571,9 @@ function InGameTrackerContent() {
     
     const newTotalRP = player.totalRP + delta;
     const newRPHistory = [...player.rpHistory, delta];
+    
+    // Show saving state
+    setSavingRP(odlId);
     
     // Update local state first
     setPlayers((prev) =>
@@ -583,44 +589,50 @@ function InGameTrackerContent() {
       )
     );
 
-    // Save to database immediately
+    // Save to database immediately with FRESH data
     if (sessionId && player.odlierId) {
       try {
-        // Update the session doc with new RP
-        const updatedPlayers = players.map((pl) =>
-          pl.odlId === odlId
-            ? { ...pl, totalRP: newTotalRP }
-            : pl
-        );
-        
+        // Create updated doc with the new RP value
         const updatedDoc = {
           ...currentDoc,
-          players: updatedPlayers.map((p) => ({
-            odlId: p.odlId,
-            odlierId: p.odlierId,
-            name: p.name,
-            games: p.games,
-            totalDamage: p.totalDamage,
-            totalKills: p.totalKills,
-            oneKGames: p.oneKGames,
-            twoKGames: p.twoKGames,
-            donuts: p.donuts,
-            totalRP: p.totalRP,
-          })),
+          players: currentDoc.players.map((p) =>
+            p.odlId === odlId
+              ? { ...p, totalRP: newTotalRP }
+              : p
+          ),
         };
 
+        // Get writeKey (only host has this)
         const writeKey = localStorage.getItem(`apex:session:${sessionId}:writeKey`);
-        await fetch('/api/post-session', {
+        
+        const response = await fetch('/api/post-session', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sessionId, writeKey, doc: updatedDoc }),
+          body: JSON.stringify({ 
+            sessionId, 
+            writeKey: writeKey || null, // Send null if not host
+            doc: updatedDoc,
+            playerIdUpdating: player.odlierId, // Tell API which player is updating
+          }),
         });
+        
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`Failed to save RP: ${errorText}`);
+        }
         
         // Save to localStorage
         saveToLocalStorage(sessionId, updatedDoc);
+        
+        console.log(`✅ RP saved: ${player.name} +${delta} (Total: ${newTotalRP})`);
       } catch (err) {
         console.error('Failed to save RP to database:', err);
+        showNotificationModal('Error', `Failed to save RP: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error');
+      } finally {
+        setSavingRP(null);
       }
+    } else {
+      setSavingRP(null);
     }
   };
 
@@ -1303,10 +1315,10 @@ function InGameTrackerContent() {
                   />
                   <button
                     onClick={() => commitRP(p.odlId)}
-                    disabled={!canEdit}
+                    disabled={!canEdit || savingRP === p.odlId}
                     className={`${primaryButton} py-2`}
                   >
-                    Add RP
+                    {savingRP === p.odlId ? 'Saving...' : 'Add RP'}
                   </button>
                   <button
                     onClick={() => undoRP(p.odlId)}
