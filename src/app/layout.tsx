@@ -1,4 +1,6 @@
 import { Geist, Geist_Mono } from 'next/font/google';
+import { ThemeProvider } from '@/components/ThemeProvider';
+import { ToastProvider } from '@/components/ToastProvider';
 import './globals.css';
 
 const geistSans = Geist({
@@ -13,7 +15,7 @@ const geistMono = Geist_Mono({
 
 export const metadata = {
   title: 'Apex Trio Tracker',
-  description: 'Track Apex stats with your squad',
+  description: 'Track Apex Legends stats with your squad',
   icons: {
     icon: '/apexfav.png',
   },
@@ -25,11 +27,15 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
-        {children}
+        <ThemeProvider>
+          <ToastProvider>
+            {children}
+          </ToastProvider>
+        </ThemeProvider>
       </body>
     </html>
   );

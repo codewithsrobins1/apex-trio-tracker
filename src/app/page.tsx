@@ -1,320 +1,233 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import AuthForm from '@/components/AuthForm';
-import ConfirmModal from '@/components/ConfirmModal';
-import {
-  fetchMyProfile,
-  logout,
-  onAuthStateChange,
-  type Profile,
-} from '@/lib/auth';
-import {
-  getActiveSeason,
-  setActiveSeason,
-  resetCurrentSeason,
-  deactivateSeason,
-  joinActiveSeason,
-  type Season,
-} from '@/lib/seasons';
+import { useEffect, useState } from 'react';
+import { ThemeToggle } from '@/components/ThemeProvider';
 
-export default function Home() {
+export default function LandingPage() {
   const router = useRouter();
+  const [mounted, setMounted] = useState(false);
 
-  // Auth state
-  const [loading, setLoading] = useState(true);
-  const [profile, setProfile] = useState<Profile | null>(null);
-
-  // Season state
-  const [season, setSeason] = useState<Season | null>(null);
-  const [seasonInput, setSeasonInput] = useState('28');
-  const [seasonLoading, setSeasonLoading] = useState(false);
-
-  // Error state
-  const [error, setError] = useState<string | null>(null);
-
-  // Confirmation modals
-  const [showResetConfirm, setShowResetConfirm] = useState(false);
-
-  // Load initial data
-  const loadData = useCallback(async () => {
-    try {
-      setError(null);
-      const [profileData, seasonData] = await Promise.all([
-        fetchMyProfile(),
-        getActiveSeason(),
-      ]);
-      setProfile(profileData);
-      setSeason(seasonData);
-      if (seasonData) {
-        setSeasonInput(String(seasonData.season_number));
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to load';
-      setError(message);
-    } finally {
-      setLoading(false);
-    }
+  useEffect(() => {
+    setMounted(true);
   }, []);
 
-  // Initial load + auth listener
-  useEffect(() => {
-    loadData();
-
-    const unsubscribe = onAuthStateChange(() => {
-      loadData();
-    });
-
-    return unsubscribe;
-  }, [loadData]);
-
-  // Handle auth success
-  async function handleAuthSuccess() {
-    setLoading(true);
-    await loadData();
+  if (!mounted) {
+    return null;
   }
 
-  // Handle logout
-  async function handleLogout() {
-    try {
-      await logout();
-      setProfile(null);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Logout failed';
-      setError(message);
-    }
-  }
-
-  // Handle set season
-  async function handleSetSeason() {
-    const num = parseInt(seasonInput, 10);
-    if (isNaN(num) || num < 1) {
-      setError('Please enter a valid season number');
-      return;
-    }
-
-    setSeasonLoading(true);
-    setError(null);
-
-    try {
-      const newSeason = await setActiveSeason(num);
-      setSeason(newSeason);
-
-      // Auto-join the season
-      await joinActiveSeason();
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to set season';
-      setError(message);
-    } finally {
-      setSeasonLoading(false);
-    }
-  }
-
-  // Handle reset season (after confirmation)
-  async function handleResetSeason() {
-    setShowResetConfirm(false);
-    setSeasonLoading(true);
-    setError(null);
-
-    try {
-      await resetCurrentSeason();
-      await deactivateSeason();
-      setSeason(null);
-      setSeasonInput('28');
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to reset season';
-      setError(message);
-    } finally {
-      setSeasonLoading(false);
-    }
-  }
-
-  // Styles
-  const card =
-    'w-full rounded-2xl border border-[#2A2E32] bg-[#121418] p-6 shadow-sm';
-  const title =
-    'text-4xl sm:text-6xl font-extrabold tracking-tight text-[#E03A3E]';
-  const btnPrimary =
-    'cursor-pointer inline-flex items-center justify-center rounded-xl border border-[#E03A3E] bg-[#E03A3E] px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-[#B71C1C] hover:border-[#B71C1C] transition disabled:opacity-50 disabled:cursor-not-allowed';
-  const btnGhost =
-    'cursor-pointer inline-flex items-center justify-center rounded-xl border border-[#2A2E32] bg-[#181B1F] px-4 py-3 text-sm font-semibold text-slate-200 shadow-sm hover:bg-[#20242A] hover:border-[#E03A3E] transition disabled:opacity-50 disabled:cursor-not-allowed';
-  const btnDanger =
-    'cursor-pointer inline-flex items-center justify-center rounded-xl border border-red-600/50 bg-red-600/10 px-4 py-3 text-sm font-semibold text-red-400 shadow-sm hover:bg-red-600/20 hover:border-red-600 transition disabled:opacity-50 disabled:cursor-not-allowed';
-  const inputClass =
-    'w-full sm:w-32 rounded-xl border border-[#2A2E32] bg-[#0E1115] px-4 py-3 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-[#E03A3E] focus:ring-1 focus:ring-[#E03A3E] disabled:opacity-50 disabled:cursor-not-allowed';
-
-  // Loading state
-  if (loading) {
-    return (
-      <main className="min-h-screen bg-[#050608] text-slate-100 px-4 py-10 grid place-items-center">
-        <div className="text-sm text-slate-400">Loading…</div>
-      </main>
-    );
-  }
-
-  // Not logged in - show auth form
-  if (!profile) {
-    return (
-      <main className="min-h-screen bg-[#050608] text-slate-100 px-4 py-10">
-        <div className="max-w-md mx-auto">
-          <div className="text-center mb-8">
-            <div className="uppercase tracking-[0.35em] text-[10px] text-slate-500 mb-2">
-              Apex Legends
-            </div>
-            <h1 className={title}>Trio Tracker</h1>
-            <p className="mt-3 text-sm text-slate-400">
-              Sign in to start tracking with your squad.
-            </p>
-          </div>
-
-          <AuthForm onSuccess={handleAuthSuccess} />
-        </div>
-      </main>
-    );
-  }
-
-  // Logged in - show main dashboard
   return (
-    <main className="min-h-screen bg-[#050608] text-slate-100 px-4 py-10">
-      <div className="max-w-2xl mx-auto">
-        {/* Header */}
-        <div className="text-center mb-8">
-          <div className="uppercase tracking-[0.35em] text-[10px] text-slate-500 mb-2">
-            Apex Legends
-          </div>
-          <h1 className={title}>Trio Tracker</h1>
-          <p className="mt-3 text-sm text-slate-400">
-            You&apos;re signed in as{' '}
-            <span className="text-slate-100 font-semibold">
-              {profile.display_name}
-            </span>
-          </p>
-        </div>
-
-        {/* Error */}
-        {error && (
-          <div className="mb-6 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
-            {error}
-          </div>
-        )}
-
-        {/* Season Card */}
-        <div className={card}>
-          <div className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400 mb-4">
-            Current Season
-          </div>
-
-          {season ? (
-            // Season is set
-            <div>
-              <div className="flex items-center gap-4 mb-4">
-                <div className="text-3xl font-bold text-[#E03A3E]">
-                  Season {season.season_number}
-                </div>
-                <div className="text-sm text-slate-500">Active</div>
-              </div>
-
-              <div className="flex flex-wrap gap-3">
-                <input
-                  type="number"
-                  value={seasonInput}
-                  disabled
-                  className={inputClass}
-                />
-                <button disabled className={btnPrimary}>
-                  Set Season
-                </button>
-                <button
-                  onClick={() => setShowResetConfirm(true)}
-                  disabled={seasonLoading}
-                  className={btnDanger}
-                >
-                  {seasonLoading ? 'Resetting…' : 'Reset Season'}
-                </button>
-              </div>
-
-              <p className="mt-3 text-xs text-slate-500">
-                To change seasons, you must reset first. This will clear all RP
-                data for this season.
-              </p>
-            </div>
-          ) : (
-            // No season set
-            <div>
-              <p className="text-sm text-slate-400 mb-4">
-                No season is currently active. Set a season to start tracking.
-              </p>
-
-              <div className="flex flex-wrap gap-3">
-                <input
-                  type="number"
-                  value={seasonInput}
-                  onChange={(e) => setSeasonInput(e.target.value)}
-                  placeholder="28"
-                  min={1}
-                  className={inputClass}
-                />
-                <button
-                  onClick={handleSetSeason}
-                  disabled={seasonLoading || !seasonInput}
-                  className={btnPrimary}
-                >
-                  {seasonLoading ? 'Setting…' : 'Set Season'}
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Navigation Cards */}
-        <div className="grid sm:grid-cols-2 gap-4 mt-6">
-          <button
-            onClick={() => router.push('/in-game-tracker')}
-            disabled={!season}
-            className={`${card} text-left hover:border-[#E03A3E] transition disabled:opacity-50 disabled:cursor-not-allowed`}
-          >
-            <div className="text-lg font-bold text-slate-100">
-              In-Game Tracker
-            </div>
-            <p className="mt-1 text-sm text-slate-400">
-              Start a session and track stats with your squad in real-time.
-            </p>
-          </button>
-
-          <button
-            onClick={() => router.push('/season-progression')}
-            disabled={!season}
-            className={`${card} text-left hover:border-[#E03A3E] transition disabled:opacity-50 disabled:cursor-not-allowed`}
-          >
-            <div className="text-lg font-bold text-slate-100">
-              Season Progression
-            </div>
-            <p className="mt-1 text-sm text-slate-400">
-              View the RP graph showing everyone&apos;s progress this season.
-            </p>
-          </button>
-        </div>
-
-        {/* Sign out */}
-        <div className="mt-8 text-center">
-          <button onClick={handleLogout} className={btnGhost}>
-            Sign Out
-          </button>
-        </div>
+    <main className="min-h-screen bg-primary overflow-hidden">
+      {/* Background effects */}
+      <div className="fixed inset-0 pointer-events-none">
+        <div className="absolute top-0 left-1/4 w-[600px] h-[600px] bg-accent/10 rounded-full blur-[128px]" />
+        <div className="absolute bottom-0 right-1/4 w-[400px] h-[400px] bg-accent/5 rounded-full blur-[96px]" />
+        <div 
+          className="absolute inset-0 opacity-[0.02]"
+          style={{
+            backgroundImage: `linear-gradient(var(--text-primary) 1px, transparent 1px),
+                              linear-gradient(90deg, var(--text-primary) 1px, transparent 1px)`,
+            backgroundSize: '60px 60px',
+          }}
+        />
       </div>
 
-      {/* Reset Confirmation Modal */}
-      <ConfirmModal
-        isOpen={showResetConfirm}
-        title="Reset Season?"
-        message="This will delete all RP entries for this season and deactivate it. Everyone's progress will be reset to 0. This cannot be undone."
-        confirmText="Yes, Reset"
-        cancelText="Cancel"
-        onConfirm={handleResetSeason}
-        onCancel={() => setShowResetConfirm(false)}
-        variant="danger"
-      />
+      {/* Navigation */}
+      <nav className="relative z-10 flex items-center justify-between px-6 py-4 max-w-7xl mx-auto">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-accent to-accent-dark flex items-center justify-center shadow-lg shadow-accent/20">
+            <svg className="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M12 2L2 19h20L12 2zm0 4l6.5 11h-13L12 6z" />
+            </svg>
+          </div>
+          <span className="text-xl font-bold text-primary">
+            Apex Trio Tracker
+          </span>
+        </div>
+        <div className="flex items-center gap-4">
+          <ThemeToggle />
+          <button
+            onClick={() => router.push('/app')}
+            className="btn-primary"
+          >
+            Launch App
+          </button>
+        </div>
+      </nav>
+
+      {/* Hero Section */}
+      <section className="relative z-10 max-w-7xl mx-auto px-6 pt-20 pb-32">
+        <div className="text-center max-w-4xl mx-auto">
+          <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-accent-glow border border-accent/20 mb-8">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-accent opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-accent"></span>
+            </span>
+            <span className="text-sm font-medium text-accent">
+              Live Session Tracking
+            </span>
+          </div>
+
+          <h1 className="text-5xl sm:text-6xl lg:text-7xl font-extrabold tracking-tight mb-6">
+            <span className="text-primary">Track Your</span>
+            <br />
+            <span className="text-accent">Squad&apos;s Legacy</span>
+          </h1>
+
+          <p className="text-lg sm:text-xl text-secondary max-w-2xl mx-auto mb-10">
+            Real-time stat tracking for your Apex Legends trio. 
+            Monitor kills, damage, RP gains, and crown your squad&apos;s 
+            true champion each season.
+          </p>
+
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
+            <button
+              onClick={() => router.push('/app')}
+              className="btn-primary text-lg px-8 py-4 w-full sm:w-auto"
+            >
+              Get Started Free
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+              </svg>
+            </button>
+            <button
+              onClick={() => {
+                document.getElementById('features')?.scrollIntoView({ behavior: 'smooth' });
+              }}
+              className="btn-secondary text-lg px-8 py-4 w-full sm:w-auto"
+            >
+              See Features
+            </button>
+          </div>
+        </div>
+
+        {/* Stats preview */}
+        <div className="mt-20 grid grid-cols-2 sm:grid-cols-4 gap-4 max-w-4xl mx-auto">
+          {[
+            { label: 'Total Kills', value: '12,847', icon: '🎯' },
+            { label: 'Damage Dealt', value: '4.2M', icon: '💥' },
+            { label: 'RP Gained', value: '+8,420', icon: '📈' },
+            { label: 'Sessions', value: '156', icon: '🎮' },
+          ].map((stat, idx) => (
+            <div
+              key={stat.label}
+              className="stat-card text-center"
+              style={{ animationDelay: `${idx * 100}ms` }}
+            >
+              <div className="text-2xl mb-2">{stat.icon}</div>
+              <div className="text-2xl sm:text-3xl font-bold text-primary mb-1">
+                {stat.value}
+              </div>
+              <div className="text-xs text-tertiary uppercase tracking-wider">
+                {stat.label}
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* Features Section */}
+      <section id="features" className="relative z-10 py-24 bg-secondary">
+        <div className="max-w-7xl mx-auto px-6">
+          <div className="text-center mb-16">
+            <h2 className="text-3xl sm:text-4xl font-bold text-primary mb-4">
+              Everything You Need to Dominate
+            </h2>
+            <p className="text-lg text-secondary max-w-2xl mx-auto">
+              Built by Apex players, for Apex players.
+            </p>
+          </div>
+
+          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {[
+              {
+                icon: '📡',
+                title: 'Live Session Sharing',
+                description: 'Share a 6-digit code with your squad. Everyone sees stats update in real-time.',
+              },
+              {
+                icon: '📊',
+                title: 'Season Progression',
+                description: 'Visualize your squad\'s RP journey with beautiful charts and comparisons.',
+              },
+              {
+                icon: '🏆',
+                title: 'Leaderboard & Awards',
+                description: 'Crown the MVP with Most Kills, Most Damage, and yes... Most Donuts.',
+              },
+              {
+                icon: '👤',
+                title: 'Personal Dashboard',
+                description: 'Track your personal stats, view your improvement over time.',
+              },
+              {
+                icon: '💬',
+                title: 'Discord Integration',
+                description: 'Post session summaries directly to your Discord server.',
+              },
+              {
+                icon: '🌓',
+                title: 'Light & Dark Mode',
+                description: 'Easy on the eyes during those late-night sessions.',
+              },
+            ].map((feature, idx) => (
+              <div
+                key={feature.title}
+                className="card p-6"
+                style={{ animationDelay: `${idx * 100}ms` }}
+              >
+                <div className="w-12 h-12 rounded-xl bg-accent-glow flex items-center justify-center text-2xl mb-4">
+                  {feature.icon}
+                </div>
+                <h3 className="text-lg font-semibold text-primary mb-2">
+                  {feature.title}
+                </h3>
+                <p className="text-secondary text-sm leading-relaxed">
+                  {feature.description}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* CTA Section */}
+      <section className="relative z-10 py-24">
+        <div className="max-w-4xl mx-auto px-6 text-center">
+          <h2 className="text-3xl sm:text-4xl font-bold text-primary mb-4">
+            Ready to Track Your Trio?
+          </h2>
+          <p className="text-lg text-secondary mb-8">
+            Join your squad and start climbing the ranks together.
+          </p>
+          <button
+            onClick={() => router.push('/app')}
+            className="btn-primary text-lg px-10 py-4"
+          >
+            Launch Tracker
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+            </svg>
+          </button>
+        </div>
+      </section>
+
+      {/* Footer */}
+      <footer className="relative z-10 border-t border-themed py-8">
+        <div className="max-w-7xl mx-auto px-6 flex flex-col sm:flex-row items-center justify-between gap-4">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-accent to-accent-dark flex items-center justify-center">
+              <svg className="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M12 2L2 19h20L12 2zm0 4l6.5 11h-13L12 6z" />
+              </svg>
+            </div>
+            <span className="text-sm font-semibold text-primary">Apex Trio Tracker</span>
+          </div>
+          <p className="text-sm text-tertiary">
+            Built with ❤️ for the Apex community
+          </p>
+        </div>
+      </footer>
     </main>
   );
 }

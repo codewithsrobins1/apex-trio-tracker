@@ -7,7 +7,7 @@ import { Suspense } from 'react';
 function GateContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const redirectTo = searchParams.get('redirect') || '/';
+  const redirectTo = searchParams.get('redirect') || '/app';
 
   const [pin, setPin] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -33,7 +33,6 @@ function GateContent() {
         return;
       }
 
-      // Success - redirect to intended page
       router.push(redirectTo);
       router.refresh();
     } catch {
@@ -43,13 +42,13 @@ function GateContent() {
   }
 
   return (
-    <main className="min-h-screen bg-[#050608] text-slate-100 px-4 py-10 flex items-center justify-center">
+    <main className="min-h-screen bg-primary px-4 py-10 flex items-center justify-center">
       <div className="w-full max-w-md">
         {/* Logo/Header */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-[#E03A3E]/10 border border-[#E03A3E]/20 mb-4">
+          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-accent-glow border border-accent/20 mb-4">
             <svg
-              className="w-8 h-8 text-[#E03A3E]"
+              className="w-8 h-8 text-accent"
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
@@ -62,10 +61,10 @@ function GateContent() {
               />
             </svg>
           </div>
-          <h1 className="text-2xl sm:text-3xl font-bold text-[#E03A3E] mb-2">
+          <h1 className="text-2xl sm:text-3xl font-bold text-accent mb-2">
             Early Access
           </h1>
-          <p className="text-sm text-slate-400">
+          <p className="text-sm text-secondary">
             Apex Trio Tracker is currently in early access.
             <br />
             Please enter the PIN to continue.
@@ -73,16 +72,16 @@ function GateContent() {
         </div>
 
         {/* PIN Form */}
-        <div className="rounded-2xl border border-[#2A2E32] bg-[#121418] p-6 shadow-sm">
+        <div className="card p-6">
           {error && (
-            <div className="mb-4 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+            <div className="mb-4 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-400">
               {error}
             </div>
           )}
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wide text-slate-400 mb-2">
+              <label className="block text-xs font-semibold uppercase tracking-wide text-tertiary mb-2">
                 Access PIN
               </label>
               <input
@@ -92,14 +91,14 @@ function GateContent() {
                 onChange={(e) => setPin(e.target.value)}
                 placeholder="Enter PIN"
                 autoFocus
-                className="w-full rounded-xl border border-[#2A2E32] bg-[#0E1115] px-4 py-3 text-center text-lg tracking-[0.5em] text-slate-100 outline-none placeholder:text-slate-500 placeholder:tracking-normal focus:border-[#E03A3E] focus:ring-1 focus:ring-[#E03A3E]"
+                className="input text-center text-lg tracking-[0.5em] placeholder:tracking-normal"
               />
             </div>
 
             <button
               type="submit"
               disabled={loading || !pin}
-              className="w-full cursor-pointer rounded-xl border border-[#E03A3E] bg-[#E03A3E] px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-[#B71C1C] hover:border-[#B71C1C] transition disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-full btn-primary py-3"
             >
               {loading ? 'Verifying…' : 'Enter'}
             </button>
@@ -107,7 +106,7 @@ function GateContent() {
         </div>
 
         {/* Footer */}
-        <p className="mt-6 text-center text-xs text-slate-500">
+        <p className="mt-6 text-center text-xs text-tertiary">
           Don&apos;t have the PIN? Contact the app administrator.
         </p>
       </div>
@@ -119,8 +118,8 @@ export default function GatePage() {
   return (
     <Suspense
       fallback={
-        <main className="min-h-screen bg-[#050608] text-slate-100 px-4 py-10 flex items-center justify-center">
-          <div className="text-sm text-slate-400">Loading…</div>
+        <main className="min-h-screen bg-primary px-4 py-10 flex items-center justify-center">
+          <div className="text-sm text-secondary">Loading…</div>
         </main>
       }
     >
