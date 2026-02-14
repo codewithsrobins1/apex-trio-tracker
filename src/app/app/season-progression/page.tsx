@@ -34,25 +34,37 @@ type PlayerStats = {
   rpHistory: { date: string; rp: number }[];
 };
 
+type BestSession = {
+  date: string;
+  totalRP: number;
+  players: { name: string; rp: number }[];
+};
+
 type ChartDataPoint = {
   date: string;
   [key: string]: string | number;
 };
 
+// Player colors for the graph lines
 const PLAYER_COLORS = [
-  '#E03A3E',
-  '#3B82F6',
-  '#10B981',
-  '#F59E0B',
-  '#8B5CF6',
-  '#EC4899',
-  '#06B6D4',
-  '#F97316',
+  '#E03A3E', // Red (primary)
+  '#3B82F6', // Blue
+  '#10B981', // Green
+  '#F59E0B', // Amber
+  '#8B5CF6', // Purple
+  '#EC4899', // Pink
+  '#06B6D4', // Cyan
+  '#F97316', // Orange
 ];
 
 function formatDateLabel(isoDate: string): string {
   const [, month, day] = isoDate.split('-');
   return `${month}/${day}`;
+}
+
+function formatFullDate(isoDate: string): string {
+  const date = new Date(isoDate);
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 function getDateRangeFromStats(playerStats: PlayerStats[]): string[] {
@@ -114,6 +126,7 @@ export default function SeasonProgressionPage() {
   const [season, setSeason] = useState<Season | null>(null);
   const [players, setPlayers] = useState<SeasonPlayer[]>([]);
   const [playerStats, setPlayerStats] = useState<PlayerStats[]>([]);
+  const [bestSession, setBestSession] = useState<BestSession | null>(null);
   const [selectedPlayers, setSelectedPlayers] = useState<'all' | string[]>('all');
 
   const loadData = useCallback(async () => {
@@ -153,7 +166,7 @@ export default function SeasonProgressionPage() {
 
       setPlayers(playersList);
 
-      // Fetch game stats for all players from season_player_stats (including RP)
+      // Fetch stats for all players from season_player_stats (including RP)
       const statsPromises = playersList.map(async (player) => {
         const { data: statsData, error: statsError } = await supabase
           .from('season_player_stats')
@@ -167,11 +180,9 @@ export default function SeasonProgressionPage() {
           return null;
         }
 
-        // Aggregate all sessions for this player
         const stats = statsData ?? [];
         const totalKills = stats.reduce((sum, s) => sum + s.total_kills, 0);
         const totalDamage = stats.reduce((sum, s) => sum + s.total_damage, 0);
-        const totalGames = stats.reduce((sum, s) => sum + s.games, 0);
         const donuts = stats.reduce((sum, s) => sum + s.donuts, 0);
         const oneKGames = stats.reduce((sum, s) => sum + s.one_k_games, 0);
         const twoKGames = stats.reduce((sum, s) => sum + s.two_k_games, 0);
@@ -192,6 +203,59 @@ export default function SeasonProgressionPage() {
 
       const allStats = await Promise.all(statsPromises);
       setPlayerStats(allStats.filter((s): s is PlayerStats => s !== null));
+
+      // Fetch best squad session
+      const { data: bestSessionData, error: bestSessionError } = await supabase
+        .from('season_player_stats')
+        .select(`
+          created_at,
+          total_rp,
+          session_id,
+          profiles!inner (
+            display_name
+          )
+        `)
+        .eq('season_id', seasonData.id);
+
+      if (!bestSessionError && bestSessionData) {
+        // Group by session - use session_id if available, otherwise truncate timestamp to minute
+        const sessionMap: Record<string, { date: string; players: { name: string; rp: number }[] }> = {};
+        
+        for (const row of bestSessionData) {
+          // Create a grouping key - prefer session_id, fallback to timestamp truncated to minute
+          const timestamp = row.created_at;
+          const groupKey = row.session_id || timestamp.slice(0, 16); // "2026-02-14T07:14" (truncate to minute)
+          
+          if (!sessionMap[groupKey]) {
+            sessionMap[groupKey] = {
+              date: timestamp.split('T')[0],
+              players: [],
+            };
+          }
+          sessionMap[groupKey].players.push({
+            name: (row.profiles as { display_name: string }).display_name,
+            rp: row.total_rp || 0,
+          });
+        }
+
+        // Find session with highest total RP
+        let best: BestSession | null = null;
+        let bestTotal = -Infinity;
+
+        for (const session of Object.values(sessionMap)) {
+          const total = session.players.reduce((sum, p) => sum + p.rp, 0);
+          if (total > bestTotal) {
+            bestTotal = total;
+            best = {
+              date: session.date,
+              totalRP: total,
+              players: session.players.sort((a, b) => b.rp - a.rp),
+            };
+          }
+        }
+
+        setBestSession(best);
+      }
 
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to load data';
@@ -218,7 +282,6 @@ export default function SeasonProgressionPage() {
       cumulativeByPlayer[player.user_id] = {};
       let cumulative = 0;
       
-      // Sort rpHistory by date
       const sortedHistory = [...player.rpHistory].sort((a, b) => a.date.localeCompare(b.date));
       
       for (const entry of sortedHistory) {
@@ -235,7 +298,6 @@ export default function SeasonProgressionPage() {
       const point: ChartDataPoint = { date: formatDateLabel(date) };
 
       for (const player of players) {
-        // Get the cumulative value for this date, or use the last known value
         if (cumulativeByPlayer[player.user_id]?.[date] !== undefined) {
           cumulative[player.user_id] = cumulativeByPlayer[player.user_id][date];
         }
@@ -335,6 +397,48 @@ export default function SeasonProgressionPage() {
         {error && (
           <div className="mb-6 rounded-xl border border-error/30 bg-error/10 px-4 py-3 text-sm text-error">
             {error}
+          </div>
+        )}
+
+        {/* Best Squad Session */}
+        {bestSession && bestSession.totalRP > 0 && (
+          <div className="mb-8">
+            <div className="rounded-2xl border-2 border-amber-500/30 bg-gradient-to-r from-amber-500/10 via-amber-500/5 to-transparent p-6">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-3">
+                  <span className="text-3xl">🏆</span>
+                  <div className="text-xs font-semibold uppercase tracking-wider text-amber-500">
+                    Best Squad Session
+                  </div>
+                </div>
+                <div className="text-sm text-secondary">
+                  {formatFullDate(bestSession.date)}
+                </div>
+              </div>
+              
+              <div className="text-center mb-6">
+                <div className="text-5xl sm:text-6xl font-extrabold text-accent">
+                  +{bestSession.totalRP.toLocaleString()}
+                </div>
+                <div className="text-sm text-secondary mt-1">Total Squad RP</div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-4">
+                {bestSession.players.map((player, idx) => (
+                  <div 
+                    key={player.name}
+                    className="bg-card rounded-xl p-4 text-center border border-themed"
+                  >
+                    <div className="text-sm font-semibold text-primary mb-1 truncate">
+                      {player.name}
+                    </div>
+                    <div className={`text-xl font-bold ${player.rp >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                      {player.rp >= 0 ? '+' : ''}{player.rp}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         )}
 

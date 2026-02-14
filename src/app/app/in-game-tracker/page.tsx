@@ -111,28 +111,36 @@ function InGameTrackerContent() {
   const [saving, setSaving] = useState(false);
   const [copied, setCopied] = useState(false);
   const [modalError, setModalError] = useState<string | null>(null);
-  
+
   // Session code state
-  const [sessionCode, setSessionCode] = useState<string | null>(sessionCodeFromUrl);
-  
+  const [sessionCode, setSessionCode] = useState<string | null>(
+    sessionCodeFromUrl
+  );
+
   // NEW: Notification modal state
   const [showNotification, setShowNotification] = useState(false);
   const [notificationTitle, setNotificationTitle] = useState('');
   const [notificationMessage, setNotificationMessage] = useState('');
-  const [notificationType, setNotificationType] = useState<'success' | 'error' | 'info'>('info');
-  
+  const [notificationType, setNotificationType] = useState<
+    'success' | 'error' | 'info'
+  >('info');
+
   // NEW: Refresh state
   const [refreshing, setRefreshing] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
   const autoRefreshInterval = useRef<NodeJS.Timeout | null>(null);
-  
+
   // NEW: Saving RP state
   const [savingRP, setSavingRP] = useState<string | null>(null); // odlId of player being saved
 
   const MAX_PLAYERS = 3;
 
   // Helper to show notification modal
-  const showNotificationModal = (title: string, message: string, type: 'success' | 'error' | 'info' = 'info') => {
+  const showNotificationModal = (
+    title: string,
+    message: string,
+    type: 'success' | 'error' | 'info' = 'info'
+  ) => {
     setNotificationTitle(title);
     setNotificationMessage(message);
     setNotificationType(type);
@@ -140,31 +148,39 @@ function InGameTrackerContent() {
   };
 
   // Helper to save full state to localStorage
-  const saveToLocalStorage = useCallback((sessionId: string, doc: SessionDoc) => {
-    try {
-      localStorage.setItem(
-        `apex:session:${sessionId}:fullState`,
-        JSON.stringify({
-          ...doc,
-          lastUpdated: new Date().toISOString(),
-        })
-      );
-    } catch (err) {
-      console.error('Failed to save to localStorage:', err);
-    }
-  }, []);
+  const saveToLocalStorage = useCallback(
+    (sessionId: string, doc: SessionDoc) => {
+      try {
+        localStorage.setItem(
+          `apex:session:${sessionId}:fullState`,
+          JSON.stringify({
+            ...doc,
+            lastUpdated: new Date().toISOString(),
+          })
+        );
+      } catch (err) {
+        console.error('Failed to save to localStorage:', err);
+      }
+    },
+    []
+  );
 
   // Helper to load from localStorage
-  const loadFromLocalStorage = useCallback((sessionId: string): SessionDoc | null => {
-    try {
-      const stored = localStorage.getItem(`apex:session:${sessionId}:fullState`);
-      if (!stored) return null;
-      return JSON.parse(stored);
-    } catch (err) {
-      console.error('Failed to load from localStorage:', err);
-      return null;
-    }
-  }, []);
+  const loadFromLocalStorage = useCallback(
+    (sessionId: string): SessionDoc | null => {
+      try {
+        const stored = localStorage.getItem(
+          `apex:session:${sessionId}:fullState`
+        );
+        if (!stored) return null;
+        return JSON.parse(stored);
+      } catch (err) {
+        console.error('Failed to load from localStorage:', err);
+        return null;
+      }
+    },
+    []
+  );
 
   const loadData = useCallback(async () => {
     try {
@@ -199,7 +215,8 @@ function InGameTrackerContent() {
         const writeKey = localStorage.getItem(
           `apex:session:${sessionData.id}:writeKey`
         );
-        const isHostUser = writeKey !== null && sessionData.host_user_id === profileData.id;
+        const isHostUser =
+          writeKey !== null && sessionData.host_user_id === profileData.id;
 
         setIsHost(isHostUser);
         setSessionId(sessionData.id);
@@ -207,11 +224,14 @@ function InGameTrackerContent() {
 
         // Try to load from localStorage first
         const localData = loadFromLocalStorage(sessionData.id);
-        
+
         // Use database data but merge with localStorage if available and newer
-        const finalDoc = localData && localData.lastUpdated && new Date(localData.lastUpdated) > new Date(sessionData.updated_at)
-          ? localData
-          : doc;
+        const finalDoc =
+          localData &&
+          localData.lastUpdated &&
+          new Date(localData.lastUpdated) > new Date(sessionData.updated_at)
+            ? localData
+            : doc;
 
         setPlayers(
           finalDoc.players.map((p) => ({
@@ -232,7 +252,7 @@ function InGameTrackerContent() {
         setWins(finalDoc.wins);
         setTotalPlacement(finalDoc.totalPlacement);
         setPlacements(finalDoc.placements || []);
-        
+
         setLastRefreshed(new Date());
       } else {
         setPlayers([makeNewPlayer(profileData.id, profileData.display_name)]);
@@ -253,7 +273,7 @@ function InGameTrackerContent() {
   // NEW: Manual refresh function
   const handleRefresh = async () => {
     if (!sessionId) return;
-    
+
     setRefreshing(true);
     try {
       const { data: sessionData, error: sessionError } = await supabase
@@ -266,7 +286,7 @@ function InGameTrackerContent() {
 
       if (sessionData) {
         const doc = sessionData.doc as SessionDoc;
-        
+
         setPlayers(
           doc.players.map((p) => ({
             ...makeNewPlayer(p.odlierId, p.name),
@@ -286,15 +306,19 @@ function InGameTrackerContent() {
         setWins(doc.wins);
         setTotalPlacement(doc.totalPlacement);
         setPlacements(doc.placements || []);
-        
+
         setLastRefreshed(new Date());
-        
+
         // Save to localStorage
         saveToLocalStorage(sessionId, doc);
       }
     } catch (err) {
       console.error('Failed to refresh:', err);
-      showNotificationModal('Refresh Failed', 'Could not fetch latest data', 'error');
+      showNotificationModal(
+        'Refresh Failed',
+        'Could not fetch latest data',
+        'error'
+      );
     } finally {
       setRefreshing(false);
     }
@@ -303,7 +327,7 @@ function InGameTrackerContent() {
   // NEW: Auto-refresh every 60 seconds
   useEffect(() => {
     if (!sessionId || isHost) return; // Only auto-refresh for non-hosts
-    
+
     autoRefreshInterval.current = setInterval(() => {
       handleRefresh();
     }, 60000); // 60 seconds
@@ -357,7 +381,7 @@ function InGameTrackerContent() {
           body: JSON.stringify({ sessionId, writeKey, doc: currentDoc }),
         });
         lastSavedDoc.current = docString;
-        
+
         // Save to localStorage as backup
         saveToLocalStorage(sessionId, currentDoc);
       } catch (err) {
@@ -386,7 +410,7 @@ function InGameTrackerContent() {
         },
         (payload) => {
           const doc = payload.new.doc as SessionDoc;
-          
+
           setPlayers((currentPlayers) => {
             return doc.players.map((p) => {
               const isMe = p.odlierId === profile?.id;
@@ -412,11 +436,13 @@ function InGameTrackerContent() {
                 totalRP: p.totalRP,
                 // Preserve input field only if we're mid-edit
                 rpInput: isMe && myCurrentPlayer ? myCurrentPlayer.rpInput : '',
-                rpHistory: p.rpHistory || (isMe && myCurrentPlayer ? myCurrentPlayer.rpHistory : []),
+                rpHistory:
+                  p.rpHistory ||
+                  (isMe && myCurrentPlayer ? myCurrentPlayer.rpHistory : []),
               };
             });
           });
-          
+
           setSessionGames(doc.sessionGames);
           setWins(doc.wins);
           setTotalPlacement(doc.totalPlacement);
@@ -450,7 +476,7 @@ function InGameTrackerContent() {
 
   const confirmAddPlayers = () => {
     if (!isHost) return;
-    
+
     const newPlayers = selectedPlayerIds
       .map((id) => {
         const selectedProfile = allProfiles.find((p) => p.id === id);
@@ -583,13 +609,13 @@ function InGameTrackerContent() {
     if (!isHost && player.odlierId !== profile?.id) return;
     const delta = Number(player.rpInput);
     if (!Number.isFinite(delta) || player.rpInput === '') return;
-    
+
     const newTotalRP = player.totalRP + delta;
     const newRPHistory = [...player.rpHistory, delta];
-    
+
     // Show saving state
     setSavingRP(odlId);
-    
+
     // Update local state first
     setPlayers((prev) =>
       prev.map((pl) =>
@@ -611,38 +637,44 @@ function InGameTrackerContent() {
         const updatedDoc = {
           ...currentDoc,
           players: currentDoc.players.map((p) =>
-            p.odlId === odlId
-              ? { ...p, totalRP: newTotalRP }
-              : p
+            p.odlId === odlId ? { ...p, totalRP: newTotalRP } : p
           ),
         };
 
         // Get writeKey (only host has this)
-        const writeKey = localStorage.getItem(`apex:session:${sessionId}:writeKey`);
-        
+        const writeKey = localStorage.getItem(
+          `apex:session:${sessionId}:writeKey`
+        );
+
         const response = await fetch('/api/post-session', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-            sessionId, 
+          body: JSON.stringify({
+            sessionId,
             writeKey: writeKey || null, // Send null if not host
             doc: updatedDoc,
             playerIdUpdating: player.odlierId, // Tell API which player is updating
           }),
         });
-        
+
         if (!response.ok) {
           const errorText = await response.text();
           throw new Error(`Failed to save RP: ${errorText}`);
         }
-        
+
         // Save to localStorage
         saveToLocalStorage(sessionId, updatedDoc);
-        
-        console.log(`✅ RP saved: ${player.name} +${delta} (Total: ${newTotalRP})`);
+
+        console.log(
+          `✅ RP saved: ${player.name} +${delta} (Total: ${newTotalRP})`
+        );
       } catch (err) {
         console.error('Failed to save RP to database:', err);
-        showNotificationModal('Error', `Failed to save RP: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error');
+        showNotificationModal(
+          'Error',
+          `Failed to save RP: ${err instanceof Error ? err.message : 'Unknown error'}`,
+          'error'
+        );
       } finally {
         setSavingRP(null);
       }
@@ -688,12 +720,12 @@ function InGameTrackerContent() {
       const newSessionId = json.sessionId;
       const writeKey = json.writeKey;
       const newSessionCode = json.sessionCode;
-      
+
       localStorage.setItem(`apex:session:${newSessionId}:writeKey`, writeKey);
       setSessionId(newSessionId);
       setSessionCode(newSessionCode);
       setIsHost(true);
-      
+
       // Copy the code to clipboard
       const ok = await copyToClipboard(newSessionCode);
       if (ok) {
@@ -746,16 +778,16 @@ function InGameTrackerContent() {
       showNotificationModal('Error', 'No active season found', 'error');
       return;
     }
-    
+
     if (!sessionId) {
       showNotificationModal('Error', 'Please save the session first', 'error');
       return;
     }
-    
+
     try {
       setSaving(true);
       setError(null);
-      
+
       const res = await fetch('/api/end-session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -766,7 +798,7 @@ function InGameTrackerContent() {
       });
 
       const data = await res.json();
-      
+
       if (!res.ok) {
         throw new Error(data.error || 'Failed to end session');
       }
@@ -778,17 +810,17 @@ function InGameTrackerContent() {
         '',
         `Stats saved for ${data.statsInserted} player(s)`,
       ];
-      
+
       if (data.errors && data.errors.length > 0) {
         messages.push('', '⚠️ Warnings:', ...data.errors);
       }
-      
+
       showNotificationModal(
         data.errors?.length > 0 ? 'Saved with Warnings' : 'Session Saved!',
         messages.join('\n'),
         data.errors?.length > 0 ? 'error' : 'success'
       );
-      
+
       // Redirect to dashboard after a short delay
       setTimeout(() => {
         router.push('/app');
@@ -808,16 +840,16 @@ function InGameTrackerContent() {
       showNotificationModal('Error', 'No active season found', 'error');
       return;
     }
-    
+
     if (!sessionId) {
       showNotificationModal('Error', 'Please save the session first', 'error');
       return;
     }
-    
+
     try {
       setPosting(true);
       setError(null);
-      
+
       const res = await fetch('/api/end-session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -828,7 +860,7 @@ function InGameTrackerContent() {
       });
 
       const data = await res.json();
-      
+
       if (!res.ok) {
         throw new Error(data.error || 'Failed to end session');
       }
@@ -840,17 +872,17 @@ function InGameTrackerContent() {
         '',
         `Stats saved for ${data.statsInserted} player(s)`,
       ];
-      
+
       if (data.errors && data.errors.length > 0) {
         messages.push('', '⚠️ Warnings:', ...data.errors);
       }
-      
+
       showNotificationModal(
         data.errors?.length > 0 ? 'Posted with Warnings' : 'Success!',
         messages.join('\n'),
         data.errors?.length > 0 ? 'error' : 'success'
       );
-      
+
       // Redirect to dashboard after a short delay
       setTimeout(() => {
         router.push('/app');
@@ -885,9 +917,12 @@ function InGameTrackerContent() {
   );
 
   const availableProfiles = useMemo(() => {
-    const currentPlayerIds = players.map((p) => p.odlierId).filter((id): id is string => id !== null);
+    const currentPlayerIds = players
+      .map((p) => p.odlierId)
+      .filter((id): id is string => id !== null);
     return allProfiles.filter(
-      (p) => !currentPlayerIds.includes(p.id) && !selectedPlayerIds.includes(p.id)
+      (p) =>
+        !currentPlayerIds.includes(p.id) && !selectedPlayerIds.includes(p.id)
     );
   }, [allProfiles, players, selectedPlayerIds]);
 
@@ -950,7 +985,7 @@ function InGameTrackerContent() {
         onCancel={() => setShowNewSessionConfirm(false)}
         variant="danger"
       />
-      
+
       {/* End Session Modal */}
       {showEndSession && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
@@ -962,18 +997,29 @@ function InGameTrackerContent() {
                 onClick={() => setShowEndSession(false)}
                 className="w-8 h-8 rounded-lg bg-card-hover hover:bg-tertiary flex items-center justify-center text-secondary hover:text-white transition-colors cursor-pointer"
               >
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                <svg
+                  className="w-5 h-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M6 18L18 6M6 6l12 12"
+                  />
                 </svg>
               </button>
             </div>
-            
+
             {/* Body */}
             <div className="p-5">
               <p className="text-sm text-secondary mb-6">
-                Choose how you want to end this session. Your stats will be saved either way.
+                Choose how you want to end this session. Your stats will be
+                saved either way.
               </p>
-              
+
               <div className="space-y-3">
                 {/* Post to Discord Option */}
                 <button
@@ -982,8 +1028,12 @@ function InGameTrackerContent() {
                   className="w-full flex items-center gap-4 p-4 rounded-xl bg-[#5865F2]/10 border border-[#5865F2]/30 hover:bg-[#5865F2]/20 hover:border-[#5865F2]/50 transition-all group disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
                 >
                   <div className="w-12 h-12 rounded-xl bg-[#5865F2] flex items-center justify-center flex-shrink-0">
-                    <svg className="w-6 h-6 text-white" viewBox="0 0 24 24" fill="currentColor">
-                      <path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03z"/>
+                    <svg
+                      className="w-6 h-6 text-white"
+                      viewBox="0 0 24 24"
+                      fill="currentColor"
+                    >
+                      <path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03z" />
                     </svg>
                   </div>
                   <div className="flex-1 text-left">
@@ -994,11 +1044,21 @@ function InGameTrackerContent() {
                       Share results with your squad and save to database
                     </div>
                   </div>
-                  <svg className="w-5 h-5 text-tertiary group-hover:text-[#5865F2] transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  <svg
+                    className="w-5 h-5 text-tertiary group-hover:text-[#5865F2] transition-colors"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M9 5l7 7-7 7"
+                    />
                   </svg>
                 </button>
-                
+
                 {/* Save Session Only Option */}
                 <button
                   onClick={saveSessionOnly}
@@ -1006,8 +1066,18 @@ function InGameTrackerContent() {
                   className="w-full flex items-center gap-4 p-4 rounded-xl bg-card-hover border border-themed hover:bg-card-hover hover:border-themed transition-all group disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
                 >
                   <div className="w-12 h-12 rounded-xl bg-tertiary flex items-center justify-center flex-shrink-0">
-                    <svg className="w-6 h-6 text-secondary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
+                    <svg
+                      className="w-6 h-6 text-secondary"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"
+                      />
                     </svg>
                   </div>
                   <div className="flex-1 text-left">
@@ -1018,13 +1088,23 @@ function InGameTrackerContent() {
                       Save stats to database without posting
                     </div>
                   </div>
-                  <svg className="w-5 h-5 text-tertiary group-hover:text-slate-300 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  <svg
+                    className="w-5 h-5 text-tertiary group-hover:text-slate-300 transition-colors"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M9 5l7 7-7 7"
+                    />
                   </svg>
                 </button>
               </div>
             </div>
-            
+
             {/* Footer */}
             <div className="px-5 pb-5">
               <button
@@ -1037,7 +1117,7 @@ function InGameTrackerContent() {
           </div>
         </div>
       )}
-      
+
       {/* Notification Modal */}
       <ConfirmModal
         isOpen={showNotification}
@@ -1052,11 +1132,21 @@ function InGameTrackerContent() {
       <div className="page-container py-6">
         {/* Session Code Banner */}
         {sessionCode && (
-          <div className="mb-6 rounded-2xl bg-gradient-to-r from-accent/20 via-accent/10 to-transparent border border-accent/30 p-4 flex items-center justify-between">
+          <div className="session-code-banner rounded-2xl p-4 flex items-center justify-between mb-6">
             <div className="flex items-center gap-4">
               <div className="w-12 h-12 rounded-xl bg-accent/20 flex items-center justify-center">
-                <svg className="w-6 h-6 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.14 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0" />
+                <svg
+                  className="w-6 h-6 text-accent"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.14 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0"
+                  />
                 </svg>
               </div>
               <div>
@@ -1068,7 +1158,7 @@ function InGameTrackerContent() {
                 </div>
               </div>
             </div>
-            
+
             <button
               onClick={handleCopyCode}
               className={`px-4 py-2.5 rounded-xl text-sm font-semibold transition-all flex items-center gap-2 cursor-pointer ${
@@ -1079,15 +1169,35 @@ function InGameTrackerContent() {
             >
               {copied ? (
                 <>
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  <svg
+                    className="w-4 h-4"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M5 13l4 4L19 7"
+                    />
                   </svg>
                   Copied!
                 </>
               ) : (
                 <>
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                  <svg
+                    className="w-4 h-4"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
+                    />
                   </svg>
                   Copy Code
                 </>
@@ -1110,8 +1220,8 @@ function InGameTrackerContent() {
               {isHost ? (
                 <>
                   Enter stats and hit{' '}
-                  <span className="font-semibold text-primary">Add Game</span>
-                  . Players can update their own RP.
+                  <span className="font-semibold text-primary">Add Game</span>.
+                  Players can update their own RP.
                 </>
               ) : (
                 <>
@@ -1189,7 +1299,7 @@ function InGameTrackerContent() {
                   Select registered players to add to this session
                 </p>
               </div>
-              
+
               <div className="p-6">
                 {modalError && (
                   <div className="mb-4 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
@@ -1218,7 +1328,10 @@ function InGameTrackerContent() {
                             </span>
                             <button
                               onClick={() => addToSelection(player.id)}
-                              disabled={selectedPlayerIds.length + players.length >= MAX_PLAYERS}
+                              disabled={
+                                selectedPlayerIds.length + players.length >=
+                                MAX_PLAYERS
+                              }
                               className="w-7 h-7 rounded-lg bg-accent hover:bg-accent-dark text-white flex items-center justify-center transition disabled:opacity-50 disabled:cursor-not-allowed"
                               title="Add player"
                             >
@@ -1272,7 +1385,11 @@ function InGameTrackerContent() {
                   disabled={selectedProfiles.length === 0}
                   className={primaryButton}
                 >
-                  Add {selectedProfiles.length > 0 ? `${selectedProfiles.length} ` : ''}Player{selectedProfiles.length !== 1 ? 's' : ''}
+                  Add{' '}
+                  {selectedProfiles.length > 0
+                    ? `${selectedProfiles.length} `
+                    : ''}
+                  Player{selectedProfiles.length !== 1 ? 's' : ''}
                 </button>
               </div>
             </div>
@@ -1473,7 +1590,9 @@ function InGameTrackerContent() {
         <div className="overflow-x-auto rounded-2xl border border-themed bg-card shadow-sm">
           <div className="px-4 py-3 border-b border-themed flex items-center gap-2">
             <span className="h-3 w-1 rounded-sm bg-accent" />
-            <span className="text-xs sm:text-sm font-semibold text-primary">Session Stats</span>
+            <span className="text-xs sm:text-sm font-semibold text-primary">
+              Session Stats
+            </span>
             <span className="ml-2 px-2 py-0.5 rounded-full bg-green-500/20 text-green-400 text-[10px] font-medium uppercase tracking-wider">
               Live
             </span>
@@ -1519,9 +1638,7 @@ function InGameTrackerContent() {
                     className="border-t border-themed odd:bg-primary even:bg-card hover:bg-card-hover transition-colors"
                   >
                     <td className="px-4 py-3 text-tertiary">{idx + 1}</td>
-                    <td className="px-4 py-3 text-primary">
-                      {p.name || '—'}
-                    </td>
+                    <td className="px-4 py-3 text-primary">{p.name || '—'}</td>
                     <td className="px-4 py-3 text-primary">
                       {p.totalDamage.toLocaleString()}
                     </td>
