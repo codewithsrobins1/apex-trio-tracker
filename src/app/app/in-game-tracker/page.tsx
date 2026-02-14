@@ -388,12 +388,15 @@ function InGameTrackerContent() {
           const doc = payload.new.doc as SessionDoc;
           
           setPlayers((currentPlayers) => {
-            const myCurrentPlayer = currentPlayers.find(
-              (p) => p.odlierId === profile?.id
-            );
-
             return doc.players.map((p) => {
               const isMe = p.odlierId === profile?.id;
+              const myCurrentPlayer = currentPlayers.find(
+                (cp) => cp.odlierId === p.odlierId
+              );
+
+              // For the current user's RP: use the database value
+              // This ensures RP updates from the user are reflected
+              // (they saved to DB, now DB is pushing back the saved value)
               return {
                 ...makeNewPlayer(p.odlierId, p.name),
                 odlId: p.odlId,
@@ -405,10 +408,11 @@ function InGameTrackerContent() {
                 oneKGames: p.oneKGames,
                 twoKGames: p.twoKGames,
                 donuts: p.donuts,
-                // Preserve local RP state for the current user
-                totalRP: isMe && myCurrentPlayer ? myCurrentPlayer.totalRP : p.totalRP,
+                // Always use DB value for totalRP - it's the source of truth
+                totalRP: p.totalRP,
+                // Preserve input field only if we're mid-edit
                 rpInput: isMe && myCurrentPlayer ? myCurrentPlayer.rpInput : '',
-                rpHistory: isMe && myCurrentPlayer ? myCurrentPlayer.rpHistory : [],
+                rpHistory: p.rpHistory || (isMe && myCurrentPlayer ? myCurrentPlayer.rpHistory : []),
               };
             });
           });
@@ -893,27 +897,24 @@ function InGameTrackerContent() {
       .filter((p): p is Profile => p !== undefined);
   }, [selectedPlayerIds, allProfiles]);
 
-  const primaryButton =
-    'inline-flex items-center justify-center rounded-xl border border-[#E03A3E] bg-[#E03A3E] px-4 py-2 text-xs sm:text-sm font-medium text-white shadow-sm hover:bg-[#B71C1C] hover:border-[#B71C1C] transition disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer';
-  const secondaryButton =
-    'inline-flex items-center justify-center rounded-xl border border-[#2A2E32] bg-[#181B1F] px-4 py-2 text-xs sm:text-sm font-medium text-slate-200 shadow-sm hover:bg-[#20242A] hover:border-[#E03A3E] transition disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer';
+  const primaryButton = 'btn-primary';
+  const secondaryButton = 'btn-secondary';
   const successButton =
     'inline-flex items-center justify-center rounded-xl border border-green-600 bg-green-600 px-4 py-2 text-xs sm:text-sm font-medium text-white shadow-sm hover:bg-green-700 hover:border-green-700 transition disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer';
-  const inputClass =
-    'w-full rounded-xl border border-[#2A2E32] bg-[#0E1115] px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-[#E03A3E] focus:ring-1 focus:ring-[#E03A3E] disabled:opacity-50 disabled:cursor-not-allowed';
+  const inputClass = 'input';
 
   if (loading)
     return (
-      <main className="min-h-screen bg-[#050608] text-slate-100 px-4 py-10 grid place-items-center">
-        <div className="text-sm text-slate-400">Loading…</div>
+      <main className="min-h-screen bg-primary text-primary px-4 py-10 grid place-items-center">
+        <div className="text-sm text-secondary">Loading…</div>
       </main>
     );
   if (!profile)
     return (
-      <main className="min-h-screen bg-[#050608] text-slate-100 px-4 py-10 grid place-items-center">
+      <main className="min-h-screen bg-primary text-primary px-4 py-10 grid place-items-center">
         <div className="text-center">
           <div className="text-lg font-semibold mb-2">Not signed in</div>
-          <p className="text-sm text-slate-400 mb-4">
+          <p className="text-sm text-secondary mb-4">
             Please sign in to use the tracker.
           </p>
           <button onClick={() => router.push('/')} className={secondaryButton}>
@@ -924,10 +925,10 @@ function InGameTrackerContent() {
     );
   if (!season)
     return (
-      <main className="min-h-screen bg-[#050608] text-slate-100 px-4 py-10 grid place-items-center">
+      <main className="min-h-screen bg-primary text-primary px-4 py-10 grid place-items-center">
         <div className="text-center">
           <div className="text-lg font-semibold mb-2">No active season</div>
-          <p className="text-sm text-slate-400 mb-4">
+          <p className="text-sm text-secondary mb-4">
             Set a season first to start tracking.
           </p>
           <button onClick={() => router.push('/')} className={secondaryButton}>
@@ -938,7 +939,7 @@ function InGameTrackerContent() {
     );
 
   return (
-    <main className="min-h-screen bg-[#050608] text-slate-100 px-4 py-8">
+    <main className="min-h-screen bg-primary text-primary px-4 py-8">
       <ConfirmModal
         isOpen={showNewSessionConfirm}
         title="Start a new session?"
@@ -953,13 +954,13 @@ function InGameTrackerContent() {
       {/* End Session Modal */}
       {showEndSession && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
-          <div className="w-full max-w-md rounded-2xl bg-[#121418] border border-[#2A2E32] shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+          <div className="w-full max-w-md rounded-2xl bg-card border border-themed shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
             {/* Header */}
-            <div className="flex items-center justify-between p-5 border-b border-[#2A2E32]">
+            <div className="flex items-center justify-between p-5 border-b border-themed">
               <h2 className="text-lg font-bold text-white">End Session</h2>
               <button
                 onClick={() => setShowEndSession(false)}
-                className="w-8 h-8 rounded-lg bg-[#1F2228] hover:bg-[#2A2E32] flex items-center justify-center text-slate-400 hover:text-white transition-colors cursor-pointer"
+                className="w-8 h-8 rounded-lg bg-card-hover hover:bg-tertiary flex items-center justify-center text-secondary hover:text-white transition-colors cursor-pointer"
               >
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -969,7 +970,7 @@ function InGameTrackerContent() {
             
             {/* Body */}
             <div className="p-5">
-              <p className="text-sm text-slate-400 mb-6">
+              <p className="text-sm text-secondary mb-6">
                 Choose how you want to end this session. Your stats will be saved either way.
               </p>
               
@@ -989,11 +990,11 @@ function InGameTrackerContent() {
                     <div className="font-semibold text-white group-hover:text-[#5865F2] transition-colors">
                       {posting ? 'Posting...' : 'Post to Discord'}
                     </div>
-                    <div className="text-xs text-slate-500">
+                    <div className="text-xs text-tertiary">
                       Share results with your squad and save to database
                     </div>
                   </div>
-                  <svg className="w-5 h-5 text-slate-500 group-hover:text-[#5865F2] transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <svg className="w-5 h-5 text-tertiary group-hover:text-[#5865F2] transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                   </svg>
                 </button>
@@ -1002,22 +1003,22 @@ function InGameTrackerContent() {
                 <button
                   onClick={saveSessionOnly}
                   disabled={posting || saving}
-                  className="w-full flex items-center gap-4 p-4 rounded-xl bg-[#1F2228] border border-[#2A2E32] hover:bg-[#252930] hover:border-[#3A3F45] transition-all group disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                  className="w-full flex items-center gap-4 p-4 rounded-xl bg-card-hover border border-themed hover:bg-card-hover hover:border-themed transition-all group disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
                 >
-                  <div className="w-12 h-12 rounded-xl bg-[#2A2E32] flex items-center justify-center flex-shrink-0">
-                    <svg className="w-6 h-6 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <div className="w-12 h-12 rounded-xl bg-tertiary flex items-center justify-center flex-shrink-0">
+                    <svg className="w-6 h-6 text-secondary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
                     </svg>
                   </div>
                   <div className="flex-1 text-left">
-                    <div className="font-semibold text-slate-200 group-hover:text-white transition-colors">
+                    <div className="font-semibold text-primary group-hover:text-white transition-colors">
                       {saving ? 'Saving...' : 'Save Session Only'}
                     </div>
-                    <div className="text-xs text-slate-500">
+                    <div className="text-xs text-tertiary">
                       Save stats to database without posting
                     </div>
                   </div>
-                  <svg className="w-5 h-5 text-slate-500 group-hover:text-slate-300 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <svg className="w-5 h-5 text-tertiary group-hover:text-slate-300 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                   </svg>
                 </button>
@@ -1028,7 +1029,7 @@ function InGameTrackerContent() {
             <div className="px-5 pb-5">
               <button
                 onClick={() => setShowEndSession(false)}
-                className="w-full py-2.5 text-sm text-slate-500 hover:text-slate-300 transition-colors cursor-pointer"
+                className="w-full py-2.5 text-sm text-tertiary hover:text-slate-300 transition-colors cursor-pointer"
               >
                 Cancel
               </button>
@@ -1051,18 +1052,18 @@ function InGameTrackerContent() {
       <div className="page-container py-6">
         {/* Session Code Banner */}
         {sessionCode && (
-          <div className="mb-6 rounded-2xl bg-gradient-to-r from-[#E03A3E]/20 via-[#E03A3E]/10 to-transparent border border-[#E03A3E]/30 p-4 flex items-center justify-between">
+          <div className="mb-6 rounded-2xl bg-gradient-to-r from-accent/20 via-accent/10 to-transparent border border-accent/30 p-4 flex items-center justify-between">
             <div className="flex items-center gap-4">
-              <div className="w-12 h-12 rounded-xl bg-[#E03A3E]/20 flex items-center justify-center">
-                <svg className="w-6 h-6 text-[#E03A3E]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <div className="w-12 h-12 rounded-xl bg-accent/20 flex items-center justify-center">
+                <svg className="w-6 h-6 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.14 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0" />
                 </svg>
               </div>
               <div>
-                <div className="text-[10px] text-slate-500 uppercase tracking-[0.2em] mb-1">
+                <div className="text-[10px] text-tertiary uppercase tracking-[0.2em] mb-1">
                   Session Code
                 </div>
-                <div className="text-2xl font-bold tracking-[0.15em] text-[#E03A3E] font-mono">
+                <div className="text-2xl font-bold tracking-[0.15em] text-accent font-mono">
                   {sessionCode}
                 </div>
               </div>
@@ -1073,7 +1074,7 @@ function InGameTrackerContent() {
               className={`px-4 py-2.5 rounded-xl text-sm font-semibold transition-all flex items-center gap-2 cursor-pointer ${
                 copied
                   ? 'bg-green-500 text-white'
-                  : 'bg-[#E03A3E]/10 text-[#E03A3E] border border-[#E03A3E]/50 hover:bg-[#E03A3E] hover:text-white'
+                  : 'bg-accent/10 text-accent border border-accent/50 hover:bg-accent hover:text-white'
               }`}
             >
               {copied ? (
@@ -1097,25 +1098,25 @@ function InGameTrackerContent() {
 
         <header className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight text-[#F5F5F5]">
-              <span className="mr-2 inline-block border-l-4 border-[#E03A3E] pl-2 uppercase text-xs tracking-[0.2em] text-slate-400">
+            <h1 className="text-2xl font-bold tracking-tight text-primary">
+              <span className="mr-2 inline-block border-l-4 border-accent pl-2 uppercase text-xs tracking-[0.2em] text-secondary">
                 Season {season.season_number} • {isHost ? 'Host' : 'Player'}
               </span>
-              <span className="block text-2xl sm:text-3xl text-[#E03A3E]">
+              <span className="block text-2xl sm:text-3xl text-accent">
                 Trio Session Tracker
               </span>
             </h1>
-            <p className="mt-2 text-xs sm:text-sm text-slate-400">
+            <p className="mt-2 text-xs sm:text-sm text-secondary">
               {isHost ? (
                 <>
                   Enter stats and hit{' '}
-                  <span className="font-semibold text-slate-200">Add Game</span>
+                  <span className="font-semibold text-primary">Add Game</span>
                   . Players can update their own RP.
                 </>
               ) : (
                 <>
                   Viewing live session. You can only update{' '}
-                  <span className="font-semibold text-slate-200">
+                  <span className="font-semibold text-primary">
                     your own RP
                   </span>
                   .
@@ -1124,7 +1125,7 @@ function InGameTrackerContent() {
             </p>
             {/* NEW: Last Refreshed Indicator */}
             {lastRefreshed && !isHost && (
-              <p className="mt-1 text-xs text-slate-500">
+              <p className="mt-1 text-xs text-tertiary">
                 Last updated: {lastRefreshed.toLocaleTimeString()}
               </p>
             )}
@@ -1179,12 +1180,12 @@ function InGameTrackerContent() {
 
         {showAddPlayer && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-            <div className="w-full max-w-3xl rounded-lg bg-[#121418] border border-[#2A2E32] shadow-lg">
-              <div className="p-6 border-b border-[#2A2E32]">
+            <div className="w-full max-w-3xl rounded-lg bg-card border border-themed shadow-lg">
+              <div className="p-6 border-b border-themed">
                 <h2 className="text-lg font-semibold text-white">
                   Add Players to Session
                 </h2>
-                <p className="text-xs text-slate-400 mt-1">
+                <p className="text-xs text-secondary mt-1">
                   Select registered players to add to this session
                 </p>
               </div>
@@ -1203,22 +1204,22 @@ function InGameTrackerContent() {
                     </h3>
                     <div className="space-y-2 max-h-[300px] overflow-y-auto">
                       {availableProfiles.length === 0 ? (
-                        <div className="text-xs text-slate-500 text-center py-8">
+                        <div className="text-xs text-tertiary text-center py-8">
                           No more players available
                         </div>
                       ) : (
                         availableProfiles.map((player) => (
                           <div
                             key={player.id}
-                            className="flex items-center justify-between p-3 rounded-lg bg-[#181B1F] border border-[#2A2E32] hover:border-[#E03A3E]/50 transition"
+                            className="flex items-center justify-between p-3 rounded-lg bg-secondary border border-themed hover:border-accent/50 transition"
                           >
-                            <span className="text-sm text-slate-200">
+                            <span className="text-sm text-primary">
                               {player.display_name}
                             </span>
                             <button
                               onClick={() => addToSelection(player.id)}
                               disabled={selectedPlayerIds.length + players.length >= MAX_PLAYERS}
-                              className="w-7 h-7 rounded-lg bg-[#E03A3E] hover:bg-[#B71C1C] text-white flex items-center justify-center transition disabled:opacity-50 disabled:cursor-not-allowed"
+                              className="w-7 h-7 rounded-lg bg-accent hover:bg-accent-dark text-white flex items-center justify-center transition disabled:opacity-50 disabled:cursor-not-allowed"
                               title="Add player"
                             >
                               <span className="text-lg leading-none">+</span>
@@ -1235,21 +1236,21 @@ function InGameTrackerContent() {
                     </h3>
                     <div className="space-y-2 max-h-[300px] overflow-y-auto">
                       {selectedProfiles.length === 0 ? (
-                        <div className="text-xs text-slate-500 text-center py-8">
+                        <div className="text-xs text-tertiary text-center py-8">
                           No players selected yet
                         </div>
                       ) : (
                         selectedProfiles.map((player) => (
                           <div
                             key={player.id}
-                            className="flex items-center justify-between p-3 rounded-lg bg-[#1F2228] border border-[#E03A3E]/30"
+                            className="flex items-center justify-between p-3 rounded-lg bg-card-hover border border-accent/30"
                           >
-                            <span className="text-sm text-slate-200">
+                            <span className="text-sm text-primary">
                               {player.display_name}
                             </span>
                             <button
                               onClick={() => removeFromSelection(player.id)}
-                              className="w-7 h-7 rounded-lg bg-[#2A2E32] hover:bg-red-600/20 text-slate-400 hover:text-red-400 flex items-center justify-center transition"
+                              className="w-7 h-7 rounded-lg bg-tertiary hover:bg-red-600/20 text-secondary hover:text-red-400 flex items-center justify-center transition"
                               title="Remove player"
                             >
                               <span className="text-lg leading-none">−</span>
@@ -1262,7 +1263,7 @@ function InGameTrackerContent() {
                 </div>
               </div>
 
-              <div className="p-6 border-t border-[#2A2E32] flex justify-end gap-3">
+              <div className="p-6 border-t border-themed flex justify-end gap-3">
                 <button onClick={cancelAddPlayers} className={secondaryButton}>
                   Cancel
                 </button>
@@ -1279,54 +1280,54 @@ function InGameTrackerContent() {
         )}
 
         <section className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <div className="rounded-2xl border border-[#2A2E32] bg-[#121418] p-4 shadow-sm">
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">
+          <div className="rounded-2xl border border-themed bg-card p-4 shadow-sm">
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-tertiary">
               Games
             </div>
-            <div className="text-xl font-semibold text-slate-100">
+            <div className="text-xl font-semibold text-primary">
               {sessionGames}
             </div>
           </div>
-          <div className="rounded-2xl border border-[#2A2E32] bg-[#121418] p-4 shadow-sm">
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">
+          <div className="rounded-2xl border border-themed bg-card p-4 shadow-sm">
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-tertiary">
               Wins
             </div>
-            <div className="text-xl font-semibold text-[#C9A86A]">{wins}</div>
+            <div className="text-xl font-semibold text-amber-400">{wins}</div>
           </div>
-          <div className="rounded-2xl border border-[#2A2E32] bg-[#121418] p-4 shadow-sm">
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">
+          <div className="rounded-2xl border border-themed bg-card p-4 shadow-sm">
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-tertiary">
               Avg Placement
             </div>
-            <div className="text-xl font-semibold text-slate-100">
+            <div className="text-xl font-semibold text-primary">
               {avgPlacement.toFixed(1)}
             </div>
           </div>
-          <div className="rounded-2xl border border-[#2A2E32] bg-gradient-to-br from-[#181B1F] via-[#1F2228] to-[#3A0F13] p-4 shadow-sm">
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400">
+          <div className="rounded-2xl border border-themed bg-gradient-to-br from-secondary via-card to-accent/20 p-4 shadow-sm">
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-secondary">
               Squad RP
             </div>
-            <div className="text-xl font-semibold text-[#E03A3E]">
+            <div className="text-xl font-semibold text-accent">
               {players.reduce((acc, p) => acc + p.totalRP, 0)}
             </div>
           </div>
         </section>
 
-        <section className="mb-4 rounded-2xl border border-[#2A2E32] bg-[#121418] p-4 shadow-sm">
-          <h2 className="mb-3 text-xs sm:text-sm font-semibold text-slate-200 flex items-center gap-2">
-            <span className="h-3 w-1 rounded-sm bg-[#E03A3E]" />
+        <section className="mb-4 rounded-2xl border border-themed bg-card p-4 shadow-sm">
+          <h2 className="mb-3 text-xs sm:text-sm font-semibold text-primary flex items-center gap-2">
+            <span className="h-3 w-1 rounded-sm bg-accent" />
             Data Entry
           </h2>
           <div className="grid gap-3">
             {players.map((p, idx) => (
               <div
                 key={p.odlId}
-                className="grid grid-cols-1 items-center gap-2 rounded-xl bg-[#181B1F]/60 px-3 py-2 sm:grid-cols-12"
+                className="grid grid-cols-1 items-center gap-2 rounded-xl bg-secondary/60 px-3 py-2 sm:grid-cols-12"
               >
-                <div className="text-xs font-semibold text-slate-500 sm:col-span-1">
+                <div className="text-xs font-semibold text-tertiary sm:col-span-1">
                   #{idx + 1}
                 </div>
                 <div className="sm:col-span-3">
-                  <div className="w-full rounded-xl border border-[#2A2E32] bg-[#0E1115] px-3 py-2 text-sm text-slate-100">
+                  <div className="w-full rounded-xl border border-themed bg-primary px-3 py-2 text-sm text-primary">
                     {p.name || '(no name)'}
                   </div>
                 </div>
@@ -1362,7 +1363,7 @@ function InGameTrackerContent() {
                   {isHost && players.length > 1 && (
                     <button
                       onClick={() => removePlayer(p.odlId)}
-                      className="w-full rounded-xl border border-[#2A2E32] bg-[#181B1F] px-2 py-2 text-xs text-slate-300 hover:border-[#E03A3E] hover:bg-[#20242A] hover:text-white shadow-sm cursor-pointer"
+                      className="w-full rounded-xl border border-themed bg-secondary px-2 py-2 text-xs text-slate-300 hover:border-accent hover:bg-card-hover hover:text-white shadow-sm cursor-pointer"
                     >
                       Remove
                     </button>
@@ -1373,7 +1374,7 @@ function InGameTrackerContent() {
           </div>
           <div className="mt-4 flex flex-wrap items-center gap-3">
             <div className="flex items-center gap-2">
-              <span className="text-xs text-slate-400">Placement:</span>
+              <span className="text-xs text-secondary">Placement:</span>
               <input
                 type="number"
                 min={1}
@@ -1382,7 +1383,7 @@ function InGameTrackerContent() {
                 onChange={(e) => setPlacementInput(e.target.value)}
                 placeholder="1-20"
                 disabled={!isHost}
-                className="w-20 rounded-xl border border-[#2A2E32] bg-[#0E1115] px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-[#E03A3E] focus:ring-1 focus:ring-[#E03A3E] disabled:opacity-50"
+                className="w-20 rounded-xl border border-themed bg-primary px-3 py-2 text-sm text-primary outline-none placeholder:text-tertiary focus:border-accent focus:ring-1 focus:ring-accent disabled:opacity-50"
               />
             </div>
             <button
@@ -1402,15 +1403,15 @@ function InGameTrackerContent() {
           </div>
         </section>
 
-        <section className="mb-4 rounded-2xl border border-[#2A2E32] bg-[#121418] p-4 shadow-sm">
-          <h2 className="mb-3 text-xs sm:text-sm font-semibold text-slate-200 flex items-center gap-2">
-            <span className="h-3 w-1 rounded-sm bg-[#E03A3E]" />
+        <section className="mb-4 rounded-2xl border border-themed bg-card p-4 shadow-sm">
+          <h2 className="mb-3 text-xs sm:text-sm font-semibold text-primary flex items-center gap-2">
+            <span className="h-3 w-1 rounded-sm bg-accent" />
             Player RP
             <span className="ml-2 px-2 py-0.5 rounded-full bg-green-500/20 text-green-400 text-[10px] font-medium uppercase tracking-wider">
               Live
             </span>
           </h2>
-          <p className="text-[11px] text-slate-500 mb-3">
+          <p className="text-[11px] text-tertiary mb-3">
             Each player tracks their own RP. Enter RP change per match (can be
             negative). Updates sync in realtime.
           </p>
@@ -1421,18 +1422,18 @@ function InGameTrackerContent() {
               return (
                 <div
                   key={p.odlId}
-                  className={`flex flex-wrap items-center gap-3 rounded-xl px-3 py-2 ${isMe ? 'bg-[#1F2228] border border-[#E03A3E]/30' : 'bg-[#181B1F]/60'}`}
+                  className={`flex flex-wrap items-center gap-3 rounded-xl px-3 py-2 ${isMe ? 'bg-card-hover border border-accent/30' : 'bg-secondary/60'}`}
                 >
-                  <div className="text-xs font-semibold text-slate-500 w-6">
+                  <div className="text-xs font-semibold text-tertiary w-6">
                     #{idx + 1}
                   </div>
-                  <div className="text-sm text-slate-200 min-w-[100px]">
+                  <div className="text-sm text-primary min-w-[100px]">
                     {p.name || '(no name)'}
                     {isMe && (
-                      <span className="ml-2 text-xs text-[#E03A3E]">(You)</span>
+                      <span className="ml-2 text-xs text-accent">(You)</span>
                     )}
                   </div>
-                  <div className="text-sm font-semibold text-[#E03A3E] min-w-[80px]">
+                  <div className="text-sm font-semibold text-accent min-w-[80px]">
                     RP: {p.totalRP > 0 ? '+' : ''}
                     {p.totalRP}
                   </div>
@@ -1447,7 +1448,7 @@ function InGameTrackerContent() {
                     }}
                     placeholder="e.g. 45 or -23"
                     disabled={!canEdit}
-                    className="w-32 rounded-xl border border-[#2A2E32] bg-[#0E1115] px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-[#E03A3E] focus:ring-1 focus:ring-[#E03A3E] disabled:opacity-50"
+                    className="w-32 rounded-xl border border-themed bg-primary px-3 py-2 text-sm text-primary outline-none placeholder:text-tertiary focus:border-accent focus:ring-1 focus:ring-accent disabled:opacity-50"
                   />
                   <button
                     onClick={() => commitRP(p.odlId)}
@@ -1469,16 +1470,16 @@ function InGameTrackerContent() {
           </div>
         </section>
 
-        <div className="overflow-x-auto rounded-2xl border border-[#2A2E32] bg-[#121418] shadow-sm">
-          <div className="px-4 py-3 border-b border-[#2A2E32] flex items-center gap-2">
-            <span className="h-3 w-1 rounded-sm bg-[#E03A3E]" />
-            <span className="text-xs sm:text-sm font-semibold text-slate-200">Session Stats</span>
+        <div className="overflow-x-auto rounded-2xl border border-themed bg-card shadow-sm">
+          <div className="px-4 py-3 border-b border-themed flex items-center gap-2">
+            <span className="h-3 w-1 rounded-sm bg-accent" />
+            <span className="text-xs sm:text-sm font-semibold text-primary">Session Stats</span>
             <span className="ml-2 px-2 py-0.5 rounded-full bg-green-500/20 text-green-400 text-[10px] font-medium uppercase tracking-wider">
               Live
             </span>
           </div>
           <table className="w-full text-left text-xs sm:text-sm">
-            <thead className="bg-[#181B1F] text-slate-300 border-b border-[#2A2E32]">
+            <thead className="bg-secondary text-slate-300 border-b border-themed">
               <tr>
                 <th className="px-4 py-3 w-[44px] text-[11px] uppercase tracking-[0.16em]">
                   #
@@ -1515,23 +1516,23 @@ function InGameTrackerContent() {
                 return (
                   <tr
                     key={p.odlId}
-                    className="border-t border-[#1D2026] odd:bg-[#101319] even:bg-[#121418] hover:bg-[#181B23] transition-colors"
+                    className="border-t border-themed odd:bg-primary even:bg-card hover:bg-card-hover transition-colors"
                   >
-                    <td className="px-4 py-3 text-slate-500">{idx + 1}</td>
-                    <td className="px-4 py-3 text-slate-100">
+                    <td className="px-4 py-3 text-tertiary">{idx + 1}</td>
+                    <td className="px-4 py-3 text-primary">
                       {p.name || '—'}
                     </td>
-                    <td className="px-4 py-3 text-slate-200">
+                    <td className="px-4 py-3 text-primary">
                       {p.totalDamage.toLocaleString()}
                     </td>
-                    <td className="px-4 py-3 text-slate-200">{p.totalKills}</td>
-                    <td className="px-4 py-3 text-slate-200">{p.oneKGames}</td>
-                    <td className="px-4 py-3 text-slate-200">{p.twoKGames}</td>
-                    <td className="px-4 py-3 text-slate-200">
+                    <td className="px-4 py-3 text-primary">{p.totalKills}</td>
+                    <td className="px-4 py-3 text-primary">{p.oneKGames}</td>
+                    <td className="px-4 py-3 text-primary">{p.twoKGames}</td>
+                    <td className="px-4 py-3 text-primary">
                       {avgs.avgDamage.toFixed(0)}
                     </td>
-                    <td className="px-4 py-3 text-slate-200">{p.donuts}</td>
-                    <td className="px-4 py-3 text-[#E03A3E] font-semibold">
+                    <td className="px-4 py-3 text-primary">{p.donuts}</td>
+                    <td className="px-4 py-3 text-accent font-semibold">
                       {p.totalRP > 0 ? '+' : ''}
                       {p.totalRP}
                     </td>
@@ -1540,8 +1541,8 @@ function InGameTrackerContent() {
               })}
             </tbody>
             <tfoot>
-              <tr className="border-t border-[#2A2E32] bg-[#181B1F] font-semibold text-slate-100">
-                <td className="px-4 py-3 text-slate-500">—</td>
+              <tr className="border-t border-themed bg-secondary font-semibold text-primary">
+                <td className="px-4 py-3 text-tertiary">—</td>
                 <td className="px-4 py-3 text-slate-300">Totals</td>
                 <td className="px-4 py-3">
                   {players
@@ -1561,7 +1562,7 @@ function InGameTrackerContent() {
                 <td className="px-4 py-3">
                   {players.reduce((acc, p) => acc + p.donuts, 0)}
                 </td>
-                <td className="px-4 py-3 text-[#E03A3E]">
+                <td className="px-4 py-3 text-accent">
                   {players.reduce((acc, p) => acc + p.totalRP, 0)}
                 </td>
               </tr>
@@ -1594,8 +1595,8 @@ export default function InGameTrackerPage() {
   return (
     <Suspense
       fallback={
-        <main className="min-h-screen bg-[#050608] text-slate-100 px-4 py-10 grid place-items-center">
-          <div className="text-sm text-slate-400">Loading…</div>
+        <main className="min-h-screen bg-primary text-primary px-4 py-10 grid place-items-center">
+          <div className="text-sm text-secondary">Loading…</div>
         </main>
       }
     >
