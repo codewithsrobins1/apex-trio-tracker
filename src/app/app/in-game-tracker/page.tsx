@@ -63,7 +63,7 @@ type SessionDoc = {
 function InGameTrackerContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const sessionIdFromUrl = searchParams.get('s');
+  const sessionCodeFromUrl = searchParams.get('code');
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -71,7 +71,7 @@ function InGameTrackerContent() {
   const [season, setSeason] = useState<Season | null>(null);
   const [allProfiles, setAllProfiles] = useState<Profile[]>([]);
 
-  const [sessionId, setSessionId] = useState<string | null>(sessionIdFromUrl);
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const [isHost, setIsHost] = useState(false);
 
   const makeNewPlayer = useCallback(
@@ -104,12 +104,16 @@ function InGameTrackerContent() {
   const [placementInput, setPlacementInput] = useState('');
 
   const [showNewSessionConfirm, setShowNewSessionConfirm] = useState(false);
-  const [showPostConfirm, setShowPostConfirm] = useState(false);
+  const [showEndSession, setShowEndSession] = useState(false);
   const [showAddPlayer, setShowAddPlayer] = useState(false);
   const [selectedPlayerIds, setSelectedPlayerIds] = useState<string[]>([]);
   const [posting, setPosting] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [copied, setCopied] = useState(false);
   const [modalError, setModalError] = useState<string | null>(null);
+  
+  // Session code state
+  const [sessionCode, setSessionCode] = useState<string | null>(sessionCodeFromUrl);
   
   // NEW: Notification modal state
   const [showNotification, setShowNotification] = useState(false);
@@ -179,55 +183,57 @@ function InGameTrackerContent() {
         return;
       }
 
-      if (sessionIdFromUrl) {
-        const { data: sessionData, error: sessionError } = await supabase
-          .from('sessions')
-          .select('*')
-          .eq('id', sessionIdFromUrl)
-          .maybeSingle();
+      if (sessionCodeFromUrl) {
+        // Lookup session by code
+        const res = await fetch(`/api/post-session?code=${sessionCodeFromUrl}`);
+        const json = await res.json();
 
-        if (sessionError) throw sessionError;
-
-        if (sessionData) {
-          const doc = sessionData.doc as SessionDoc;
-          const writeKey = localStorage.getItem(
-            `apex:session:${sessionIdFromUrl}:writeKey`
-          );
-          const isHostUser = writeKey === sessionData.write_key;
-
-          setIsHost(isHostUser);
-          setSessionId(sessionIdFromUrl);
-
-          // Try to load from localStorage first
-          const localData = loadFromLocalStorage(sessionIdFromUrl);
-          
-          // Use database data but merge with localStorage if available and newer
-          const finalDoc = localData && localData.lastUpdated && new Date(localData.lastUpdated) > new Date(sessionData.updated_at)
-            ? localData
-            : doc;
-
-          setPlayers(
-            finalDoc.players.map((p) => ({
-              ...makeNewPlayer(p.odlierId, p.name),
-              odlId: p.odlId,
-              odlierId: p.odlierId,
-              name: p.name,
-              games: p.games,
-              totalDamage: p.totalDamage,
-              totalKills: p.totalKills,
-              oneKGames: p.oneKGames,
-              twoKGames: p.twoKGames,
-              donuts: p.donuts,
-              totalRP: p.totalRP,
-            }))
-          );
-          setSessionGames(finalDoc.sessionGames);
-          setWins(finalDoc.wins);
-          setTotalPlacement(finalDoc.totalPlacement);
-          setPlacements(finalDoc.placements || []);
-          
-          setLastRefreshed(new Date());
+        if (!res.ok || !json.session) {
+          setError('Session not found');
+          setLoading(false);
+          return;
         }
+
+        const sessionData = json.session;
+        const doc = sessionData.doc as SessionDoc;
+        const writeKey = localStorage.getItem(
+          `apex:session:${sessionData.id}:writeKey`
+        );
+        const isHostUser = writeKey !== null && sessionData.host_user_id === profileData.id;
+
+        setIsHost(isHostUser);
+        setSessionId(sessionData.id);
+        setSessionCode(sessionData.session_code);
+
+        // Try to load from localStorage first
+        const localData = loadFromLocalStorage(sessionData.id);
+        
+        // Use database data but merge with localStorage if available and newer
+        const finalDoc = localData && localData.lastUpdated && new Date(localData.lastUpdated) > new Date(sessionData.updated_at)
+          ? localData
+          : doc;
+
+        setPlayers(
+          finalDoc.players.map((p) => ({
+            ...makeNewPlayer(p.odlierId, p.name),
+            odlId: p.odlId,
+            odlierId: p.odlierId,
+            name: p.name,
+            games: p.games,
+            totalDamage: p.totalDamage,
+            totalKills: p.totalKills,
+            oneKGames: p.oneKGames,
+            twoKGames: p.twoKGames,
+            donuts: p.donuts,
+            totalRP: p.totalRP,
+          }))
+        );
+        setSessionGames(finalDoc.sessionGames);
+        setWins(finalDoc.wins);
+        setTotalPlacement(finalDoc.totalPlacement);
+        setPlacements(finalDoc.placements || []);
+        
+        setLastRefreshed(new Date());
       } else {
         setPlayers([makeNewPlayer(profileData.id, profileData.display_name)]);
         setIsHost(true);
@@ -238,7 +244,7 @@ function InGameTrackerContent() {
     } finally {
       setLoading(false);
     }
-  }, [sessionIdFromUrl, makeNewPlayer, loadFromLocalStorage]);
+  }, [sessionCodeFromUrl, makeNewPlayer, loadFromLocalStorage]);
 
   useEffect(() => {
     loadData();
@@ -364,6 +370,7 @@ function InGameTrackerContent() {
     };
   }, [currentDoc, sessionId, saveToLocalStorage]);
 
+  // Realtime subscription for non-host players
   useEffect(() => {
     if (!sessionId || isHost) return;
 
@@ -379,12 +386,13 @@ function InGameTrackerContent() {
         },
         (payload) => {
           const doc = payload.new.doc as SessionDoc;
-          const myCurrentPlayer = players.find(
-            (p) => p.odlierId === profile?.id
-          );
+          
+          setPlayers((currentPlayers) => {
+            const myCurrentPlayer = currentPlayers.find(
+              (p) => p.odlierId === profile?.id
+            );
 
-          setPlayers(
-            doc.players.map((p) => {
+            return doc.players.map((p) => {
               const isMe = p.odlierId === profile?.id;
               return {
                 ...makeNewPlayer(p.odlierId, p.name),
@@ -397,26 +405,29 @@ function InGameTrackerContent() {
                 oneKGames: p.oneKGames,
                 twoKGames: p.twoKGames,
                 donuts: p.donuts,
-                totalRP:
-                  isMe && myCurrentPlayer ? myCurrentPlayer.totalRP : p.totalRP,
+                // Preserve local RP state for the current user
+                totalRP: isMe && myCurrentPlayer ? myCurrentPlayer.totalRP : p.totalRP,
                 rpInput: isMe && myCurrentPlayer ? myCurrentPlayer.rpInput : '',
-                rpHistory:
-                  isMe && myCurrentPlayer ? myCurrentPlayer.rpHistory : [],
+                rpHistory: isMe && myCurrentPlayer ? myCurrentPlayer.rpHistory : [],
               };
-            })
-          );
+            });
+          });
+          
           setSessionGames(doc.sessionGames);
           setWins(doc.wins);
           setTotalPlacement(doc.totalPlacement);
           setPlacements(doc.placements || []);
+          setLastRefreshed(new Date());
         }
       )
-      .subscribe();
+      .subscribe((status) => {
+        console.log('Realtime subscription status:', status);
+      });
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [sessionId, isHost, profile?.id, makeNewPlayer, players]);
+  }, [sessionId, isHost, profile?.id, makeNewPlayer]);
 
   const addToSelection = (playerId: string) => {
     if (selectedPlayerIds.length + players.length >= MAX_PLAYERS) {
@@ -672,16 +683,20 @@ function InGameTrackerContent() {
       if (!res.ok) throw new Error(json.error || 'Failed to create session');
       const newSessionId = json.sessionId;
       const writeKey = json.writeKey;
+      const newSessionCode = json.sessionCode;
+      
       localStorage.setItem(`apex:session:${newSessionId}:writeKey`, writeKey);
       setSessionId(newSessionId);
+      setSessionCode(newSessionCode);
       setIsHost(true);
-      const url = `${window.location.origin}/in-game-tracker?s=${newSessionId}`;
-      const ok = await copyToClipboard(url);
+      
+      // Copy the code to clipboard
+      const ok = await copyToClipboard(newSessionCode);
       if (ok) {
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
       }
-      router.push(`/in-game-tracker?s=${newSessionId}`);
+      router.push(`/app/in-game-tracker?code=${newSessionCode}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create session');
     }
@@ -698,200 +713,144 @@ function InGameTrackerContent() {
     setPlacements([]);
     setPlacementInput('');
     setSessionId(null);
+    setSessionCode(null);
     setShowNewSessionConfirm(false);
-    router.push('/in-game-tracker');
+    router.push('/app/in-game-tracker');
   };
 
   const handleCopyLink = async () => {
-    if (!sessionId) return;
-    const url = `${window.location.origin}/in-game-tracker?s=${sessionId}`;
-    const ok = await copyToClipboard(url);
+    if (!sessionCode) return;
+    const ok = await copyToClipboard(sessionCode);
     if (ok) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     }
   };
 
-  // UPDATED: postToDiscord with fresh data fetch and proper RP accumulation
-  const postToDiscord = async () => {
-    console.log('🚀 postToDiscord called!', { season, sessionId });
+  const handleCopyCode = async () => {
+    if (!sessionCode) return;
+    const ok = await copyToClipboard(sessionCode);
+    if (ok) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  // Save session to DB without posting to Discord
+  const saveSessionOnly = async () => {
     if (!season) {
-      console.error('❌ Missing season', { season });
       showNotificationModal('Error', 'No active season found', 'error');
       return;
     }
+    
+    if (!sessionId) {
+      showNotificationModal('Error', 'Please save the session first', 'error');
+      return;
+    }
+    
+    try {
+      setSaving(true);
+      setError(null);
+      
+      const res = await fetch('/api/end-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId,
+          postToDiscord: false,
+        }),
+      });
+
+      const data = await res.json();
+      
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to end session');
+      }
+
+      setShowEndSession(false);
+
+      const messages = [
+        'Session saved to database ✅',
+        '',
+        `Stats saved for ${data.statsInserted} player(s)`,
+      ];
+      
+      if (data.errors && data.errors.length > 0) {
+        messages.push('', '⚠️ Warnings:', ...data.errors);
+      }
+      
+      showNotificationModal(
+        data.errors?.length > 0 ? 'Saved with Warnings' : 'Session Saved!',
+        messages.join('\n'),
+        data.errors?.length > 0 ? 'error' : 'success'
+      );
+      
+      // Redirect to dashboard after a short delay
+      setTimeout(() => {
+        router.push('/app');
+      }, 2000);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to save';
+      showNotificationModal('Error', message, 'error');
+      setError(message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Post to Discord and save all stats
+  const postToDiscord = async () => {
+    if (!season) {
+      showNotificationModal('Error', 'No active season found', 'error');
+      return;
+    }
+    
+    if (!sessionId) {
+      showNotificationModal('Error', 'Please save the session first', 'error');
+      return;
+    }
+    
     try {
       setPosting(true);
       setError(null);
       
-      // Determine which data to use
-      let dataToPost: SessionDoc;
-      
-      if (sessionId) {
-        // STEP 1A: Has session - Fetch fresh session data from database
-        console.log('📡 Fetching fresh session data...');
-        const { data: freshSessionData, error: fetchError } = await supabase
-          .from('sessions')
-          .select('*')
-          .eq('id', sessionId)
-          .maybeSingle();
-
-        if (fetchError) throw fetchError;
-        if (!freshSessionData) throw new Error('Session not found');
-
-        dataToPost = freshSessionData.doc as SessionDoc;
-      } else {
-        // STEP 1B: No session - Use current local state
-        console.log('📊 Using local state (no session saved)');
-        dataToPost = currentDoc;
-      }
-      
-      // Use data for Discord post
-      // Use data for Discord post
-      const avgPlacement =
-        dataToPost.sessionGames > 0 ? (dataToPost.totalPlacement / dataToPost.sessionGames).toFixed(1) : '0';
-      const lines: string[] = [
-        `**Apex Session Summary — Season ${season.season_number}**`,
-        `Games: ${dataToPost.sessionGames} | Wins: ${dataToPost.wins} | Avg Placement: ${avgPlacement}`,
-        '',
-      ];
-      
-      dataToPost.players.forEach((p, i) => {
-        const avgDmg = p.games > 0 ? (p.totalDamage / p.games).toFixed(0) : '0';
-        lines.push(`**#${i + 1} ${p.name || '(no name)'}**`);
-        lines.push(
-          `• Damage: ${p.totalDamage.toLocaleString()} (Avg: ${avgDmg})`
-        );
-        lines.push(`• Kills: ${p.totalKills}`);
-        lines.push(`• 1k Games: ${p.oneKGames} | 2k Games: ${p.twoKGames}`);
-        lines.push(`• Donuts: ${p.donuts}`);
-        lines.push(`• Session RP: ${p.totalRP > 0 ? '+' : ''}${p.totalRP}`);
-        lines.push('');
-      });
-      
-      const totalSquadRP = dataToPost.players.reduce((acc, p) => acc + p.totalRP, 0);
-      lines.push(
-        `**Squad Total RP: ${totalSquadRP > 0 ? '+' : ''}${totalSquadRP}**`
-      );
-
-      // STEP 2: Post to Discord
-      const res = await fetch('/api/discord', {
+      const res = await fetch('/api/end-session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ payload: { content: lines.join('\n') } }),
+        body: JSON.stringify({
+          sessionId,
+          postToDiscord: true,
+        }),
       });
-      if (!res.ok)
-        throw new Error((await res.text()) || 'Failed to post to Discord');
 
-      // STEP 3: Save RP to graph (with accumulation for same day)
-      const today = new Date().toISOString().split('T')[0];
-      const successMessages: string[] = [];
-      const errorMessages: string[] = [];
-
-      for (const player of dataToPost.players) {
-        if (!player.odlierId) continue; // Skip unregistered players (no odlierId)
-
-        // STEP 3A: Auto-register player to season if not already registered
-        const { data: existingSeasonPlayer, error: checkError } = await supabase
-          .from('season_players')
-          .select('season_id')
-          .eq('season_id', season.id)
-          .eq('user_id', player.odlierId)
-          .maybeSingle();
-
-        if (checkError) {
-          console.error(`Failed to check registration for ${player.name}:`, checkError);
-          errorMessages.push(`Failed to check registration for ${player.name}`);
-          continue;
-        }
-
-        if (!existingSeasonPlayer) {
-          // Player not registered yet, register them
-          const { error: registerError } = await supabase
-            .from('season_players')
-            .insert({
-              season_id: season.id,
-              user_id: player.odlierId,
-            });
-
-          if (registerError) {
-            // Check if it's a duplicate key error (23505 = unique violation)
-            if (registerError.code === '23505') {
-              console.log(`ℹ️ ${player.name} already registered to Season ${season.season_number}`);
-              // Don't add to error messages - this is fine, just means they're already registered
-            } else {
-              console.error(`Failed to register ${player.name} to season:`, registerError);
-              errorMessages.push(`Failed to register ${player.name}: ${registerError.message}`);
-              continue; // Skip RP save if registration failed
-            }
-          } else {
-            console.log(`✅ Auto-registered ${player.name} to Season ${season.season_number}`);
-          }
-        } else {
-          console.log(`ℹ️ ${player.name} already registered to Season ${season.season_number}`);
-        }
-
-        // STEP 3B: Save RP (skip if RP is 0)
-        if (player.totalRP === 0) {
-          successMessages.push(`${player.name}: Registered (no RP this session)`);
-          continue;
-        }
-
-        // Check if entry exists for today
-        const { data: existing } = await supabase
-          .from('season_rp_entries')
-          .select('id, delta_rp')
-          .eq('season_id', season.id)
-          .eq('user_id', player.odlierId)
-          .eq('entry_date', today)
-          .maybeSingle();
-
-        if (existing) {
-          // UPDATE: Add to existing RP
-          const newDeltaRP = existing.delta_rp + player.totalRP;
-          const { error: updateError } = await supabase
-            .from('season_rp_entries')
-            .update({ delta_rp: newDeltaRP })
-            .eq('id', existing.id);
-
-          if (updateError) {
-            console.error(`Failed to update RP for ${player.name}:`, updateError);
-            errorMessages.push(`Failed to update ${player.name}`);
-          } else {
-            successMessages.push(`${player.name}: ${player.totalRP >= 0 ? '+' : ''}${player.totalRP} RP (Total today: ${newDeltaRP >= 0 ? '+' : ''}${newDeltaRP})`);
-          }
-        } else {
-          // INSERT: Create new entry
-          const { error: insertError } = await supabase
-            .from('season_rp_entries')
-            .insert({
-              season_id: season.id,
-              user_id: player.odlierId,
-              delta_rp: player.totalRP,
-              entry_date: today,
-            });
-
-          if (insertError) {
-            console.error(`Failed to save RP for ${player.name}:`, insertError);
-            errorMessages.push(`Failed to save ${player.name}`);
-          } else {
-            successMessages.push(`${player.name}: ${player.totalRP >= 0 ? '+' : ''}${player.totalRP} RP`);
-          }
-        }
+      const data = await res.json();
+      
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to end session');
       }
 
-      setShowPostConfirm(false);
+      setShowEndSession(false);
 
-      // Show in-app notification
-      const title = errorMessages.length > 0 ? 'Posted with Warnings' : 'Success!';
-      const message = [
-        'Posted to Discord ✅',
+      const messages = [
+        data.discordPosted ? 'Posted to Discord ✅' : 'Discord post failed ⚠️',
         '',
-        ...successMessages,
-        ...(errorMessages.length > 0 ? ['', '⚠️ Errors:', ...errorMessages] : [])
-      ].join('\n');
+        `Stats saved for ${data.statsInserted} player(s)`,
+      ];
       
-      showNotificationModal(title, message, errorMessages.length > 0 ? 'error' : 'success');
+      if (data.errors && data.errors.length > 0) {
+        messages.push('', '⚠️ Warnings:', ...data.errors);
+      }
+      
+      showNotificationModal(
+        data.errors?.length > 0 ? 'Posted with Warnings' : 'Success!',
+        messages.join('\n'),
+        data.errors?.length > 0 ? 'error' : 'success'
+      );
+      
+      // Redirect to dashboard after a short delay
+      setTimeout(() => {
+        router.push('/app');
+      }, 2000);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to post';
       showNotificationModal('Error', message, 'error');
@@ -990,17 +949,95 @@ function InGameTrackerContent() {
         onCancel={() => setShowNewSessionConfirm(false)}
         variant="danger"
       />
-      <ConfirmModal
-        isOpen={showPostConfirm}
-        title="Post to Discord?"
-        message="This will post the session stats to Discord and save everyone's RP to the season progression graph."
-        confirmText={posting ? 'Posting…' : 'Yes, Post'}
-        cancelText="Cancel"
-        onConfirm={postToDiscord}
-        onCancel={() => setShowPostConfirm(false)}
-      />
       
-      {/* NEW: Notification Modal */}
+      {/* End Session Modal */}
+      {showEndSession && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md rounded-2xl bg-[#121418] border border-[#2A2E32] shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            {/* Header */}
+            <div className="flex items-center justify-between p-5 border-b border-[#2A2E32]">
+              <h2 className="text-lg font-bold text-white">End Session</h2>
+              <button
+                onClick={() => setShowEndSession(false)}
+                className="w-8 h-8 rounded-lg bg-[#1F2228] hover:bg-[#2A2E32] flex items-center justify-center text-slate-400 hover:text-white transition-colors cursor-pointer"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            
+            {/* Body */}
+            <div className="p-5">
+              <p className="text-sm text-slate-400 mb-6">
+                Choose how you want to end this session. Your stats will be saved either way.
+              </p>
+              
+              <div className="space-y-3">
+                {/* Post to Discord Option */}
+                <button
+                  onClick={postToDiscord}
+                  disabled={posting || saving}
+                  className="w-full flex items-center gap-4 p-4 rounded-xl bg-[#5865F2]/10 border border-[#5865F2]/30 hover:bg-[#5865F2]/20 hover:border-[#5865F2]/50 transition-all group disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                >
+                  <div className="w-12 h-12 rounded-xl bg-[#5865F2] flex items-center justify-center flex-shrink-0">
+                    <svg className="w-6 h-6 text-white" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03z"/>
+                    </svg>
+                  </div>
+                  <div className="flex-1 text-left">
+                    <div className="font-semibold text-white group-hover:text-[#5865F2] transition-colors">
+                      {posting ? 'Posting...' : 'Post to Discord'}
+                    </div>
+                    <div className="text-xs text-slate-500">
+                      Share results with your squad and save to database
+                    </div>
+                  </div>
+                  <svg className="w-5 h-5 text-slate-500 group-hover:text-[#5865F2] transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                </button>
+                
+                {/* Save Session Only Option */}
+                <button
+                  onClick={saveSessionOnly}
+                  disabled={posting || saving}
+                  className="w-full flex items-center gap-4 p-4 rounded-xl bg-[#1F2228] border border-[#2A2E32] hover:bg-[#252930] hover:border-[#3A3F45] transition-all group disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                >
+                  <div className="w-12 h-12 rounded-xl bg-[#2A2E32] flex items-center justify-center flex-shrink-0">
+                    <svg className="w-6 h-6 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
+                    </svg>
+                  </div>
+                  <div className="flex-1 text-left">
+                    <div className="font-semibold text-slate-200 group-hover:text-white transition-colors">
+                      {saving ? 'Saving...' : 'Save Session Only'}
+                    </div>
+                    <div className="text-xs text-slate-500">
+                      Save stats to database without posting
+                    </div>
+                  </div>
+                  <svg className="w-5 h-5 text-slate-500 group-hover:text-slate-300 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+            
+            {/* Footer */}
+            <div className="px-5 pb-5">
+              <button
+                onClick={() => setShowEndSession(false)}
+                className="w-full py-2.5 text-sm text-slate-500 hover:text-slate-300 transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Notification Modal */}
       <ConfirmModal
         isOpen={showNotification}
         title={notificationTitle}
@@ -1011,7 +1048,53 @@ function InGameTrackerContent() {
         variant={notificationType === 'error' ? 'danger' : 'default'}
       />
 
-      <div className="mx-auto max-w-[1300px]">
+      <div className="page-container py-6">
+        {/* Session Code Banner */}
+        {sessionCode && (
+          <div className="mb-6 rounded-2xl bg-gradient-to-r from-[#E03A3E]/20 via-[#E03A3E]/10 to-transparent border border-[#E03A3E]/30 p-4 flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-xl bg-[#E03A3E]/20 flex items-center justify-center">
+                <svg className="w-6 h-6 text-[#E03A3E]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.14 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0" />
+                </svg>
+              </div>
+              <div>
+                <div className="text-[10px] text-slate-500 uppercase tracking-[0.2em] mb-1">
+                  Session Code
+                </div>
+                <div className="text-2xl font-bold tracking-[0.15em] text-[#E03A3E] font-mono">
+                  {sessionCode}
+                </div>
+              </div>
+            </div>
+            
+            <button
+              onClick={handleCopyCode}
+              className={`px-4 py-2.5 rounded-xl text-sm font-semibold transition-all flex items-center gap-2 cursor-pointer ${
+                copied
+                  ? 'bg-green-500 text-white'
+                  : 'bg-[#E03A3E]/10 text-[#E03A3E] border border-[#E03A3E]/50 hover:bg-[#E03A3E] hover:text-white'
+              }`}
+            >
+              {copied ? (
+                <>
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                  Copied!
+                </>
+              ) : (
+                <>
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                  </svg>
+                  Copy Code
+                </>
+              )}
+            </button>
+          </div>
+        )}
+
         <header className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <h1 className="text-2xl font-bold tracking-tight text-[#F5F5F5]">
@@ -1074,17 +1157,13 @@ function InGameTrackerContent() {
                 </button>
               </>
             )}
-            {sessionId ? (
-              <button onClick={handleCopyLink} className={primaryButton}>
-                {copied ? 'Copied!' : 'Share Live Link'}
-              </button>
-            ) : (
+            {!sessionCode && (
               <button onClick={createSession} className={primaryButton}>
-                Share Live Link
+                Start Session
               </button>
             )}
             <button
-              onClick={() => router.push('/')}
+              onClick={() => router.push('/app')}
               className={secondaryButton}
             >
               Home
@@ -1247,16 +1326,9 @@ function InGameTrackerContent() {
                   #{idx + 1}
                 </div>
                 <div className="sm:col-span-3">
-                  <input
-                    type="text"
-                    value={p.name}
-                    onChange={(e) =>
-                      updateField(p.odlId, 'name', e.target.value)
-                    }
-                    placeholder="Player name"
-                    disabled={!isHost}
-                    className={inputClass}
-                  />
+                  <div className="w-full rounded-xl border border-[#2A2E32] bg-[#0E1115] px-3 py-2 text-sm text-slate-100">
+                    {p.name || '(no name)'}
+                  </div>
                 </div>
                 <div className="sm:col-span-3">
                   <input
@@ -1334,10 +1406,13 @@ function InGameTrackerContent() {
           <h2 className="mb-3 text-xs sm:text-sm font-semibold text-slate-200 flex items-center gap-2">
             <span className="h-3 w-1 rounded-sm bg-[#E03A3E]" />
             Player RP
+            <span className="ml-2 px-2 py-0.5 rounded-full bg-green-500/20 text-green-400 text-[10px] font-medium uppercase tracking-wider">
+              Live
+            </span>
           </h2>
           <p className="text-[11px] text-slate-500 mb-3">
             Each player tracks their own RP. Enter RP change per match (can be
-            negative). Updates save immediately.
+            negative). Updates sync in realtime.
           </p>
           <div className="grid gap-3">
             {players.map((p, idx) => {
@@ -1395,6 +1470,13 @@ function InGameTrackerContent() {
         </section>
 
         <div className="overflow-x-auto rounded-2xl border border-[#2A2E32] bg-[#121418] shadow-sm">
+          <div className="px-4 py-3 border-b border-[#2A2E32] flex items-center gap-2">
+            <span className="h-3 w-1 rounded-sm bg-[#E03A3E]" />
+            <span className="text-xs sm:text-sm font-semibold text-slate-200">Session Stats</span>
+            <span className="ml-2 px-2 py-0.5 rounded-full bg-green-500/20 text-green-400 text-[10px] font-medium uppercase tracking-wider">
+              Live
+            </span>
+          </div>
           <table className="w-full text-left text-xs sm:text-sm">
             <thead className="bg-[#181B1F] text-slate-300 border-b border-[#2A2E32]">
               <tr>
@@ -1490,14 +1572,14 @@ function InGameTrackerContent() {
         <div className="mt-6 flex flex-wrap items-center gap-3">
           {isHost && (
             <button
-              onClick={() => setShowPostConfirm(true)}
+              onClick={() => setShowEndSession(true)}
               className={successButton}
             >
-              Post Session to Discord
+              End Session
             </button>
           )}
           <button
-            onClick={() => router.push('/season-progression')}
+            onClick={() => router.push('/app/season-progression')}
             className={secondaryButton}
           >
             View Season Progression

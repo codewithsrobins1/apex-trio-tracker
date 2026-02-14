@@ -44,29 +44,20 @@ export default function AuthForm({ onSuccess }: AuthFormProps) {
     }
   }
 
-  const inputClass =
-    'w-full rounded-xl border border-[#2A2E32] bg-[#0E1115] px-4 py-3 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-[#E03A3E] focus:ring-1 focus:ring-[#E03A3E]';
-
-  const btnPrimary =
-    'w-full cursor-pointer rounded-xl border border-[#E03A3E] bg-[#E03A3E] px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-[#B71C1C] hover:border-[#B71C1C] transition disabled:opacity-50 disabled:cursor-not-allowed';
-
-  const btnGhost =
-    'cursor-pointer text-sm text-slate-400 hover:text-white underline underline-offset-4 transition';
-
   return (
     <div className="w-full max-w-md mx-auto">
-      <div className="rounded-2xl border border-[#2A2E32] bg-[#121418] p-6 shadow-sm">
-        <h2 className="text-xl font-bold text-slate-100 mb-1">
+      <div className="card p-6">
+        <h2 className="text-xl font-bold text-primary mb-1">
           {mode === 'login' ? 'Welcome Back' : 'Create Account'}
         </h2>
-        <p className="text-sm text-slate-400 mb-6">
+        <p className="text-sm text-secondary mb-6">
           {mode === 'login'
             ? 'Enter your credentials to continue'
             : 'Set up your account to start tracking'}
         </p>
 
         {error && (
-          <div className="mb-4 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+          <div className="mb-4 rounded-xl border border-error/30 bg-error/10 px-4 py-3 text-sm text-error">
             {error}
           </div>
         )}
@@ -74,7 +65,7 @@ export default function AuthForm({ onSuccess }: AuthFormProps) {
         <form onSubmit={handleSubmit} className="space-y-4">
           {mode === 'register' && (
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wide text-slate-400 mb-2">
+              <label className="block text-xs font-semibold uppercase tracking-wide text-tertiary mb-2">
                 Display Name
               </label>
               <input
@@ -82,14 +73,14 @@ export default function AuthForm({ onSuccess }: AuthFormProps) {
                 value={displayName}
                 onChange={(e) => setDisplayName(e.target.value)}
                 placeholder="How others will see you"
-                className={inputClass}
+                className="input"
                 autoComplete="name"
               />
             </div>
           )}
 
           <div>
-            <label className="block text-xs font-semibold uppercase tracking-wide text-slate-400 mb-2">
+            <label className="block text-xs font-semibold uppercase tracking-wide text-tertiary mb-2">
               Username
             </label>
             <input
@@ -97,13 +88,13 @@ export default function AuthForm({ onSuccess }: AuthFormProps) {
               value={username}
               onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/\s/g, ''))}
               placeholder="Your unique username"
-              className={inputClass}
+              className="input"
               autoComplete="username"
             />
           </div>
 
           <div>
-            <label className="block text-xs font-semibold uppercase tracking-wide text-slate-400 mb-2">
+            <label className="block text-xs font-semibold uppercase tracking-wide text-tertiary mb-2">
               Password
             </label>
             <input
@@ -111,12 +102,12 @@ export default function AuthForm({ onSuccess }: AuthFormProps) {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="••••••••"
-              className={inputClass}
+              className="input"
               autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
             />
           </div>
 
-          <button type="submit" disabled={loading} className={btnPrimary}>
+          <button type="submit" disabled={loading} className="btn-primary w-full py-3">
             {loading
               ? mode === 'login'
                 ? 'Signing in…'
@@ -129,7 +120,7 @@ export default function AuthForm({ onSuccess }: AuthFormProps) {
 
         <div className="mt-6 text-center">
           {mode === 'login' ? (
-            <p className="text-sm text-slate-400">
+            <p className="text-sm text-secondary">
               Don&apos;t have an account?{' '}
               <button
                 type="button"
@@ -137,13 +128,13 @@ export default function AuthForm({ onSuccess }: AuthFormProps) {
                   setMode('register');
                   setError(null);
                 }}
-                className={btnGhost}
+                className="text-accent hover:underline cursor-pointer"
               >
                 Create one
               </button>
             </p>
           ) : (
-            <p className="text-sm text-slate-400">
+            <p className="text-sm text-secondary">
               Already have an account?{' '}
               <button
                 type="button"
@@ -151,7 +142,7 @@ export default function AuthForm({ onSuccess }: AuthFormProps) {
                   setMode('login');
                   setError(null);
                 }}
-                className={btnGhost}
+                className="text-accent hover:underline cursor-pointer"
               >
                 Sign in
               </button>

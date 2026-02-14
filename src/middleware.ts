@@ -12,6 +12,11 @@ export function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
+  // Allow root landing page
+  if (pathname === '/') {
+    return NextResponse.next();
+  }
+
   // Allow static files and Next.js internals
   if (
     pathname.startsWith('/_next') ||

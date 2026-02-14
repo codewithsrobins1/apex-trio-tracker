@@ -33,16 +33,24 @@ export async function POST(request: NextRequest) {
     // PIN is correct - set cookie
     const response = NextResponse.json({ success: true });
 
-    response.cookies.set('site_access', 'granted', {
+    // Set cookie - don't use secure on localhost
+    const isProduction = process.env.NODE_ENV === 'production';
+    
+    response.cookies.set({
+      name: 'site_access',
+      value: 'granted',
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
+      secure: isProduction,
       sameSite: 'lax',
       maxAge: 60 * 60 * 24 * 30, // 30 days
       path: '/',
+      // Don't set domain for localhost
     });
 
+    console.log('PIN verified, cookie set, production:', isProduction);
     return response;
-  } catch {
+  } catch (err) {
+    console.error('verify-pin error:', err);
     return NextResponse.json(
       { error: 'Internal server error' },
       { status: 500 }
