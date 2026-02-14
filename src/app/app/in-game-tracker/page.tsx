@@ -15,6 +15,18 @@ import { getActiveSeason, type Season } from '@/lib/seasons';
 import ConfirmModal from '@/components/ConfirmModal';
 import { copyToClipboard } from '@/helpers/copyToClipboard';
 
+// ===== Helper: Check if localStorage is available (fails in Safari Private Browsing) =====
+function isLocalStorageAvailable(): boolean {
+  try {
+    const testKey = '__storage_test__';
+    localStorage.setItem(testKey, testKey);
+    localStorage.removeItem(testKey);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ===== Types =====
 type GameEntry = { damage: number; kills: number };
 type Player = {
@@ -133,6 +145,12 @@ function InGameTrackerContent() {
   // NEW: Saving RP state
   const [savingRP, setSavingRP] = useState<string | null>(null); // odlId of player being saved
 
+  // Connection status for realtime
+  const [isConnected, setIsConnected] = useState(true);
+
+  // Track if we have pending unsaved changes
+  const [hasPendingChanges, setHasPendingChanges] = useState(false);
+
   const MAX_PLAYERS = 3;
 
   // Helper to show notification modal
@@ -147,9 +165,13 @@ function InGameTrackerContent() {
     setShowNotification(true);
   };
 
-  // Helper to save full state to localStorage
+  // Helper to save full state to localStorage (with availability check)
   const saveToLocalStorage = useCallback(
-    (sessionId: string, doc: SessionDoc) => {
+    (sessionId: string, doc: SessionDoc): boolean => {
+      if (!isLocalStorageAvailable()) {
+        console.warn('localStorage not available (possibly Private Browsing)');
+        return false;
+      }
       try {
         localStorage.setItem(
           `apex:session:${sessionId}:fullState`,
@@ -158,8 +180,10 @@ function InGameTrackerContent() {
             lastUpdated: new Date().toISOString(),
           })
         );
+        return true;
       } catch (err) {
         console.error('Failed to save to localStorage:', err);
+        return false;
       }
     },
     []
@@ -167,7 +191,8 @@ function InGameTrackerContent() {
 
   // Helper to load from localStorage
   const loadFromLocalStorage = useCallback(
-    (sessionId: string): SessionDoc | null => {
+    (sessionId: string): (SessionDoc & { lastUpdated?: string }) | null => {
+      if (!isLocalStorageAvailable()) return null;
       try {
         const stored = localStorage.getItem(
           `apex:session:${sessionId}:fullState`
@@ -212,9 +237,9 @@ function InGameTrackerContent() {
 
         const sessionData = json.session;
         const doc = sessionData.doc as SessionDoc;
-        const writeKey = localStorage.getItem(
-          `apex:session:${sessionData.id}:writeKey`
-        );
+        const writeKey = isLocalStorageAvailable()
+          ? localStorage.getItem(`apex:session:${sessionData.id}:writeKey`)
+          : null;
         const isHostUser =
           writeKey !== null && sessionData.host_user_id === profileData.id;
 
@@ -270,8 +295,8 @@ function InGameTrackerContent() {
     loadData();
   }, [loadData]);
 
-  // NEW: Manual refresh function
-  const handleRefresh = async () => {
+  // ===== IMPROVED: Sync with server (works for both host and non-host) =====
+  const syncWithServer = useCallback(async () => {
     if (!sessionId) return;
 
     setRefreshing(true);
@@ -285,59 +310,125 @@ function InGameTrackerContent() {
       if (sessionError) throw sessionError;
 
       if (sessionData) {
-        const doc = sessionData.doc as SessionDoc;
+        const serverDoc = sessionData.doc as SessionDoc;
+        const localData = loadFromLocalStorage(sessionId);
 
-        setPlayers(
-          doc.players.map((p) => ({
-            ...makeNewPlayer(p.odlierId, p.name),
-            odlId: p.odlId,
-            odlierId: p.odlierId,
-            name: p.name,
-            games: p.games,
-            totalDamage: p.totalDamage,
-            totalKills: p.totalKills,
-            oneKGames: p.oneKGames,
-            twoKGames: p.twoKGames,
-            donuts: p.donuts,
-            totalRP: p.totalRP,
-          }))
-        );
-        setSessionGames(doc.sessionGames);
-        setWins(doc.wins);
-        setTotalPlacement(doc.totalPlacement);
-        setPlacements(doc.placements || []);
+        const serverTime = new Date(sessionData.updated_at).getTime();
+        const localTime = localData?.lastUpdated
+          ? new Date(localData.lastUpdated).getTime()
+          : 0;
+
+        // For non-hosts: always use server data
+        // For hosts: use whichever is newer, but prefer server to avoid conflicts
+        if (!isHost || serverTime >= localTime) {
+          setPlayers((currentPlayers) =>
+            serverDoc.players.map((p) => {
+              const currentPlayer = currentPlayers.find(
+                (cp) => cp.odlId === p.odlId
+              );
+              return {
+                ...makeNewPlayer(p.odlierId, p.name),
+                odlId: p.odlId,
+                odlierId: p.odlierId,
+                name: p.name,
+                games: p.games,
+                totalDamage: p.totalDamage,
+                totalKills: p.totalKills,
+                oneKGames: p.oneKGames,
+                twoKGames: p.twoKGames,
+                donuts: p.donuts,
+                totalRP: p.totalRP,
+                // Preserve input fields if user is mid-edit
+                rpInput: currentPlayer?.rpInput || '',
+                damageInput: currentPlayer?.damageInput || '',
+                killsInput: currentPlayer?.killsInput || '',
+                history: currentPlayer?.history || [],
+                rpHistory: currentPlayer?.rpHistory || [],
+              };
+            })
+          );
+          setSessionGames(serverDoc.sessionGames);
+          setWins(serverDoc.wins);
+          setTotalPlacement(serverDoc.totalPlacement);
+          setPlacements(serverDoc.placements || []);
+
+          // Update local cache
+          saveToLocalStorage(sessionId, serverDoc);
+        }
 
         setLastRefreshed(new Date());
-
-        // Save to localStorage
-        saveToLocalStorage(sessionId, doc);
+        setHasPendingChanges(false);
       }
     } catch (err) {
-      console.error('Failed to refresh:', err);
+      console.error('Failed to sync with server:', err);
       showNotificationModal(
-        'Refresh Failed',
-        'Could not fetch latest data',
+        'Sync Failed',
+        'Could not fetch latest data. Your changes are saved locally.',
         'error'
       );
     } finally {
       setRefreshing(false);
     }
-  };
+  }, [sessionId, isHost, loadFromLocalStorage, makeNewPlayer, saveToLocalStorage]);
 
-  // NEW: Auto-refresh every 60 seconds
+  // ===== Handle iOS Safari visibility changes =====
   useEffect(() => {
-    if (!sessionId || isHost) return; // Only auto-refresh for non-hosts
+    if (!sessionId) return;
 
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        console.log('Page became visible, syncing with server...');
+        syncWithServer();
+      }
+    };
+
+    // Also handle page focus (for desktop browsers)
+    const handleFocus = () => {
+      console.log('Window focused, syncing with server...');
+      syncWithServer();
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleFocus);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, [sessionId, syncWithServer]);
+
+  // ===== Warn before leaving if there are pending changes =====
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (hasPendingChanges || savingRP) {
+        e.preventDefault();
+        e.returnValue = 'You have unsaved changes. Are you sure you want to leave?';
+        return e.returnValue;
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [hasPendingChanges, savingRP]);
+
+  // ===== Auto-refresh for ALL users (not just non-hosts) =====
+  useEffect(() => {
+    if (!sessionId) return;
+
+    // Refresh every 30 seconds for everyone
     autoRefreshInterval.current = setInterval(() => {
-      handleRefresh();
-    }, 60000); // 60 seconds
+      // Only auto-refresh if page is visible and not currently saving
+      if (document.visibilityState === 'visible' && !savingRP && !saving) {
+        syncWithServer();
+      }
+    }, 30000);
 
     return () => {
       if (autoRefreshInterval.current) {
         clearInterval(autoRefreshInterval.current);
       }
     };
-  }, [sessionId, isHost]);
+  }, [sessionId, syncWithServer, savingRP, saving]);
 
   const currentDoc: SessionDoc = useMemo(
     () => ({
@@ -365,25 +456,30 @@ function InGameTrackerContent() {
   const lastSavedDoc = useRef<string>('');
 
   useEffect(() => {
-    if (!sessionId) return;
+    if (!sessionId || !isHost) return;
     const docString = JSON.stringify(currentDoc);
     if (docString === lastSavedDoc.current) return;
+    
+    setHasPendingChanges(true);
+    
     if (saveTimer.current) clearTimeout(saveTimer.current);
 
     saveTimer.current = setTimeout(async () => {
       try {
-        const writeKey = localStorage.getItem(
-          `apex:session:${sessionId}:writeKey`
-        );
-        await fetch('/api/post-session', {
+        const writeKey = isLocalStorageAvailable()
+          ? localStorage.getItem(`apex:session:${sessionId}:writeKey`)
+          : null;
+        const response = await fetch('/api/post-session', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ sessionId, writeKey, doc: currentDoc }),
         });
-        lastSavedDoc.current = docString;
-
-        // Save to localStorage as backup
-        saveToLocalStorage(sessionId, currentDoc);
+        if (response.ok) {
+          lastSavedDoc.current = docString;
+          setHasPendingChanges(false);
+          // Save to localStorage as backup
+          saveToLocalStorage(sessionId, currentDoc);
+        }
       } catch (err) {
         console.error('Failed to save session:', err);
       }
@@ -392,11 +488,11 @@ function InGameTrackerContent() {
     return () => {
       if (saveTimer.current) clearTimeout(saveTimer.current);
     };
-  }, [currentDoc, sessionId, saveToLocalStorage]);
+  }, [currentDoc, sessionId, isHost, saveToLocalStorage]);
 
-  // Realtime subscription for non-host players
+  // Realtime subscription for session updates
   useEffect(() => {
-    if (!sessionId || isHost) return;
+    if (!sessionId) return;
 
     const channel = supabase
       .channel(`session-${sessionId}`)
@@ -409,13 +505,19 @@ function InGameTrackerContent() {
           filter: `id=eq.${sessionId}`,
         },
         (payload) => {
+          // Don't overwrite if we're currently saving
+          if (savingRP) {
+            console.log('Skipping realtime update while saving RP');
+            return;
+          }
+
           const doc = payload.new.doc as SessionDoc;
 
           setPlayers((currentPlayers) => {
             return doc.players.map((p) => {
               const isMe = p.odlierId === profile?.id;
               const myCurrentPlayer = currentPlayers.find(
-                (cp) => cp.odlierId === p.odlierId
+                (cp) => cp.odlId === p.odlId
               );
 
               // For the current user's RP: use the database value
@@ -436,9 +538,10 @@ function InGameTrackerContent() {
                 totalRP: p.totalRP,
                 // Preserve input field only if we're mid-edit
                 rpInput: isMe && myCurrentPlayer ? myCurrentPlayer.rpInput : '',
-                rpHistory:
-                  p.rpHistory ||
-                  (isMe && myCurrentPlayer ? myCurrentPlayer.rpHistory : []),
+                rpHistory: myCurrentPlayer?.rpHistory || [],
+                history: myCurrentPlayer?.history || [],
+                damageInput: isMe && myCurrentPlayer ? myCurrentPlayer.damageInput : '',
+                killsInput: isMe && myCurrentPlayer ? myCurrentPlayer.killsInput : '',
               };
             });
           });
@@ -452,12 +555,13 @@ function InGameTrackerContent() {
       )
       .subscribe((status) => {
         console.log('Realtime subscription status:', status);
+        setIsConnected(status === 'SUBSCRIBED');
       });
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [sessionId, isHost, profile?.id, makeNewPlayer]);
+  }, [sessionId, profile?.id, makeNewPlayer, savingRP]);
 
   const addToSelection = (playerId: string) => {
     if (selectedPlayerIds.length + players.length >= MAX_PLAYERS) {
@@ -602,7 +706,7 @@ function InGameTrackerContent() {
     if (last.placement === 1) setWins((w) => Math.max(0, w - 1));
   };
 
-  // UPDATED: commitRP now saves to database immediately with correct data
+  // ===== CRITICAL FIX: commitRP now properly handles race conditions =====
   const commitRP = async (odlId: string) => {
     const player = players.find((p) => p.odlId === odlId);
     if (!player) return;
@@ -616,35 +720,45 @@ function InGameTrackerContent() {
     // Show saving state
     setSavingRP(odlId);
 
-    // Update local state first
-    setPlayers((prev) =>
-      prev.map((pl) =>
-        pl.odlId === odlId
-          ? {
-              ...pl,
-              totalRP: newTotalRP,
-              rpHistory: newRPHistory,
-              rpInput: '',
-            }
-          : pl
-      )
+    // ===== KEY FIX: Build the complete updated state BEFORE any async operations =====
+    const updatedPlayers = players.map((pl) =>
+      pl.odlId === odlId
+        ? {
+            ...pl,
+            totalRP: newTotalRP,
+            rpHistory: newRPHistory,
+            rpInput: '',
+          }
+        : pl
     );
 
-    // Save to database immediately with FRESH data
+    // Build the doc to save using the updated players array (NOT currentDoc which may be stale)
+    const updatedDoc: SessionDoc = {
+      players: updatedPlayers.map((p) => ({
+        odlId: p.odlId,
+        odlierId: p.odlierId,
+        name: p.name,
+        games: p.games,
+        totalDamage: p.totalDamage,
+        totalKills: p.totalKills,
+        oneKGames: p.oneKGames,
+        twoKGames: p.twoKGames,
+        donuts: p.donuts,
+        totalRP: p.totalRP,
+      })),
+      sessionGames,
+      wins,
+      totalPlacement,
+      placements,
+    };
+
+    // Save to database FIRST, then update local state on success
     if (sessionId && player.odlierId) {
       try {
-        // Create updated doc with the new RP value
-        const updatedDoc = {
-          ...currentDoc,
-          players: currentDoc.players.map((p) =>
-            p.odlId === odlId ? { ...p, totalRP: newTotalRP } : p
-          ),
-        };
-
         // Get writeKey (only host has this)
-        const writeKey = localStorage.getItem(
-          `apex:session:${sessionId}:writeKey`
-        );
+        const writeKey = isLocalStorageAvailable()
+          ? localStorage.getItem(`apex:session:${sessionId}:writeKey`)
+          : null;
 
         const response = await fetch('/api/post-session', {
           method: 'PUT',
@@ -658,48 +772,115 @@ function InGameTrackerContent() {
         });
 
         if (!response.ok) {
-          const errorText = await response.text();
-          throw new Error(`Failed to save RP: ${errorText}`);
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.error || `HTTP ${response.status}`);
         }
 
-        // Save to localStorage
+        // SUCCESS: Now update local state
+        setPlayers(updatedPlayers);
+
+        // Update the lastSavedDoc ref to prevent duplicate saves from the debounced effect
+        lastSavedDoc.current = JSON.stringify(updatedDoc);
+
+        // Save to localStorage as backup
         saveToLocalStorage(sessionId, updatedDoc);
 
         console.log(
-          `✅ RP saved: ${player.name} +${delta} (Total: ${newTotalRP})`
+          `✅ RP saved: ${player.name} ${delta >= 0 ? '+' : ''}${delta} (Total: ${newTotalRP})`
         );
       } catch (err) {
         console.error('Failed to save RP to database:', err);
         showNotificationModal(
-          'Error',
-          `Failed to save RP: ${err instanceof Error ? err.message : 'Unknown error'}`,
+          'Failed to Save RP',
+          `Could not save your RP change. Please try again. Error: ${err instanceof Error ? err.message : 'Unknown error'}`,
           'error'
         );
+        // Don't update local state on failure - keep the old value
       } finally {
         setSavingRP(null);
       }
     } else {
+      // No session yet - just update locally
+      setPlayers(updatedPlayers);
       setSavingRP(null);
     }
   };
 
-  const undoRP = (odlId: string) => {
+  const undoRP = async (odlId: string) => {
     const player = players.find((p) => p.odlId === odlId);
     if (!player || player.rpHistory.length === 0) return;
     if (!isHost && player.odlierId !== profile?.id) return;
+    
     const last = player.rpHistory[player.rpHistory.length - 1];
-    setPlayers((prev) =>
-      prev.map((pl) =>
-        pl.odlId === odlId
-          ? {
-              ...pl,
-              totalRP: pl.totalRP - last,
-              rpHistory: pl.rpHistory.slice(0, -1),
-              rpInput: String(last),
-            }
-          : pl
-      )
+    const newTotalRP = player.totalRP - last;
+    const newRPHistory = player.rpHistory.slice(0, -1);
+
+    setSavingRP(odlId);
+
+    const updatedPlayers = players.map((pl) =>
+      pl.odlId === odlId
+        ? {
+            ...pl,
+            totalRP: newTotalRP,
+            rpHistory: newRPHistory,
+            rpInput: String(last),
+          }
+        : pl
     );
+
+    const updatedDoc: SessionDoc = {
+      players: updatedPlayers.map((p) => ({
+        odlId: p.odlId,
+        odlierId: p.odlierId,
+        name: p.name,
+        games: p.games,
+        totalDamage: p.totalDamage,
+        totalKills: p.totalKills,
+        oneKGames: p.oneKGames,
+        twoKGames: p.twoKGames,
+        donuts: p.donuts,
+        totalRP: p.totalRP,
+      })),
+      sessionGames,
+      wins,
+      totalPlacement,
+      placements,
+    };
+
+    if (sessionId && player.odlierId) {
+      try {
+        const writeKey = isLocalStorageAvailable()
+          ? localStorage.getItem(`apex:session:${sessionId}:writeKey`)
+          : null;
+
+        const response = await fetch('/api/post-session', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sessionId,
+            writeKey: writeKey || null,
+            doc: updatedDoc,
+            playerIdUpdating: player.odlierId,
+          }),
+        });
+
+        if (!response.ok) {
+          throw new Error('Failed to undo RP');
+        }
+
+        setPlayers(updatedPlayers);
+        lastSavedDoc.current = JSON.stringify(updatedDoc);
+        saveToLocalStorage(sessionId, updatedDoc);
+      } catch (err) {
+        console.error('Failed to undo RP:', err);
+        showNotificationModal('Error', 'Failed to undo RP change', 'error');
+      } finally {
+        setSavingRP(null);
+      }
+    } else {
+      setPlayers(updatedPlayers);
+      setSavingRP(null);
+    }
   };
 
   const createSession = async () => {
@@ -721,7 +902,9 @@ function InGameTrackerContent() {
       const writeKey = json.writeKey;
       const newSessionCode = json.sessionCode;
 
-      localStorage.setItem(`apex:session:${newSessionId}:writeKey`, writeKey);
+      if (isLocalStorageAvailable()) {
+        localStorage.setItem(`apex:session:${newSessionId}:writeKey`, writeKey);
+      }
       setSessionId(newSessionId);
       setSessionCode(newSessionCode);
       setIsHost(true);
@@ -1233,22 +1416,36 @@ function InGameTrackerContent() {
                 </>
               )}
             </p>
-            {/* NEW: Last Refreshed Indicator */}
-            {lastRefreshed && !isHost && (
-              <p className="mt-1 text-xs text-tertiary">
-                Last updated: {lastRefreshed.toLocaleTimeString()}
-              </p>
-            )}
+            {/* Connection & Sync Status */}
+            <div className="mt-1 flex items-center gap-3 text-xs">
+              {lastRefreshed && (
+                <span className="text-tertiary">
+                  Last synced: {lastRefreshed.toLocaleTimeString()}
+                </span>
+              )}
+              <span
+                className={`flex items-center gap-1 ${isConnected ? 'text-green-400' : 'text-yellow-400'}`}
+              >
+                <span
+                  className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-400' : 'bg-yellow-400'}`}
+                />
+                {isConnected ? 'Live' : 'Reconnecting...'}
+              </span>
+              {hasPendingChanges && (
+                <span className="text-yellow-400">● Saving...</span>
+              )}
+            </div>
           </div>
           <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-            {/* NEW: Refresh Button for non-hosts */}
-            {!isHost && sessionId && (
+            {/* Sync Button for everyone */}
+            {sessionId && (
               <button
-                onClick={handleRefresh}
+                onClick={syncWithServer}
                 disabled={refreshing}
                 className={secondaryButton}
+                title="Sync with server"
               >
-                {refreshing ? '🔄 Refreshing...' : '🔄 Refresh Tracker'}
+                {refreshing ? '🔄 Syncing...' : '🔄 Sync'}
               </button>
             )}
             {isHost && (
@@ -1576,7 +1773,7 @@ function InGameTrackerContent() {
                   </button>
                   <button
                     onClick={() => undoRP(p.odlId)}
-                    disabled={!canEdit || p.rpHistory.length === 0}
+                    disabled={!canEdit || p.rpHistory.length === 0 || savingRP === p.odlId}
                     className={`${secondaryButton} py-2`}
                   >
                     Undo
