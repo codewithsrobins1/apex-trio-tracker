@@ -8,6 +8,69 @@ function supabaseAdmin() {
   return createClient(url, key, { auth: { persistSession: false } });
 }
 
+// Generate a unique 6-digit code
+async function generateUniqueCode(supabase: ReturnType<typeof supabaseAdmin>): Promise<string> {
+  const maxAttempts = 10;
+  
+  for (let i = 0; i < maxAttempts; i++) {
+    // Generate random 6-digit code
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    
+    // Check if it already exists
+    const { data } = await supabase
+      .from('sessions')
+      .select('id')
+      .eq('session_code', code)
+      .maybeSingle();
+    
+    if (!data) {
+      return code;
+    }
+  }
+  
+  throw new Error('Failed to generate unique session code');
+}
+
+// GET - Lookup session by code
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const code = searchParams.get('code');
+
+    if (!code) {
+      return NextResponse.json(
+        { error: 'Missing session code' },
+        { status: 400 }
+      );
+    }
+
+    const supabase = supabaseAdmin();
+
+    const { data: session, error } = await supabase
+      .from('sessions')
+      .select('id, session_code, season_number, host_user_id, doc, created_at, updated_at')
+      .eq('session_code', code)
+      .maybeSingle();
+
+    if (error) {
+      console.error('Failed to lookup session:', error);
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    if (!session) {
+      return NextResponse.json({ error: 'Session not found' }, { status: 404 });
+    }
+
+    return NextResponse.json({ session });
+  } catch (error) {
+    console.error('GET /api/post-session error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
 // POST - Create new session
 export async function POST(request: NextRequest) {
   try {
@@ -24,12 +87,14 @@ export async function POST(request: NextRequest) {
     const supabase = supabaseAdmin();
     const sessionId = crypto.randomUUID();
     const writeKey = crypto.randomUUID();
+    const sessionCode = await generateUniqueCode(supabase);
 
     const { error } = await supabase.from('sessions').insert({
       id: sessionId,
       season_number: seasonNumber,
       host_user_id: hostUserId,
       write_key: writeKey,
+      session_code: sessionCode,
       doc,
     });
 
@@ -38,7 +103,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    return NextResponse.json({ sessionId, writeKey });
+    return NextResponse.json({ sessionId, writeKey, sessionCode });
   } catch (error) {
     console.error('POST /api/post-session error:', error);
     return NextResponse.json(

@@ -15,7 +15,6 @@ import {
 import { supabase } from '@/lib/supabase/client';
 import { fetchMyProfile, type Profile } from '@/lib/auth';
 import { getActiveSeason, type Season } from '@/lib/seasons';
-import { createLiveSession, getLiveSessionByCode, addPlayerToSession } from '@/lib/liveSessions';
 import { useToast } from '@/components/ToastProvider';
 
 type PlayerStats = {
@@ -92,46 +91,26 @@ export default function DashboardPage() {
 
   const loadPlayerStats = async (userId: string, seasonId: string) => {
     try {
-      // Get all game stats for this user in this season
-      const { data: gameData, error: gameError } = await supabase
-        .from('player_game_stats')
-        .select(`
-          damage,
-          kills,
-          created_at,
-          game_stats!inner (
-            live_sessions!inner (
-              season_id
-            )
-          )
-        `)
-        .eq('user_id', userId)
-        .eq('game_stats.live_sessions.season_id', seasonId)
-        .order('created_at', { ascending: true });
-
-      if (gameError) throw gameError;
-
-      const games = gameData ?? [];
-      
-      // Calculate stats
-      const totalKills = games.reduce((sum, g) => sum + g.kills, 0);
-      const totalDamage = games.reduce((sum, g) => sum + g.damage, 0);
-      const donuts = games.filter(g => g.kills === 0).length;
-      const oneKGames = games.filter(g => g.damage >= 1000).length;
-      const twoKGames = games.filter(g => g.damage >= 2000).length;
-      const totalGames = games.length;
-
-      // Get RP entries
-      const { data: rpData, error: rpError } = await supabase
-        .from('season_rp_entries')
-        .select('delta_rp, entry_date')
+      // Get all session stats for this user in this season (including RP)
+      const { data: statsData, error: statsError } = await supabase
+        .from('season_player_stats')
+        .select('games, total_damage, total_kills, one_k_games, two_k_games, donuts, total_rp, created_at')
         .eq('user_id', userId)
         .eq('season_id', seasonId)
-        .order('entry_date', { ascending: true });
+        .order('created_at', { ascending: true });
 
-      if (rpError) throw rpError;
+      if (statsError) throw statsError;
 
-      const totalRP = (rpData ?? []).reduce((sum, r) => sum + r.delta_rp, 0);
+      const sessions = statsData ?? [];
+      
+      // Aggregate stats across all sessions
+      const totalKills = sessions.reduce((sum, s) => sum + s.total_kills, 0);
+      const totalDamage = sessions.reduce((sum, s) => sum + s.total_damage, 0);
+      const donuts = sessions.reduce((sum, s) => sum + s.donuts, 0);
+      const oneKGames = sessions.reduce((sum, s) => sum + s.one_k_games, 0);
+      const twoKGames = sessions.reduce((sum, s) => sum + s.two_k_games, 0);
+      const totalGames = sessions.reduce((sum, s) => sum + s.games, 0);
+      const totalRP = sessions.reduce((sum, s) => sum + (s.total_rp || 0), 0);
 
       setStats({
         totalKills,
@@ -148,46 +127,27 @@ export default function DashboardPage() {
       // Build chart data - aggregate by date
       const dateMap = new Map<string, ChartDataPoint>();
       
-      // Initialize with RP data
+      // Build cumulative stats from sessions (including RP)
       let cumulativeRP = 0;
-      for (const rp of (rpData ?? [])) {
-        const date = formatDate(rp.entry_date);
-        cumulativeRP += rp.delta_rp;
-        
-        if (!dateMap.has(date)) {
-          dateMap.set(date, {
-            date,
-            rp: cumulativeRP,
-            kills: 0,
-            damage: 0,
-            donuts: 0,
-            oneK: 0,
-            twoK: 0,
-          });
-        } else {
-          dateMap.get(date)!.rp = cumulativeRP;
-        }
-      }
-
-      // Add game stats (cumulative)
       let cumulativeKills = 0;
       let cumulativeDamage = 0;
       let cumulativeDonuts = 0;
       let cumulative1K = 0;
       let cumulative2K = 0;
 
-      for (const game of games) {
-        const date = formatDate(game.created_at.split('T')[0]);
-        cumulativeKills += game.kills;
-        cumulativeDamage += game.damage;
-        if (game.kills === 0) cumulativeDonuts++;
-        if (game.damage >= 1000) cumulative1K++;
-        if (game.damage >= 2000) cumulative2K++;
+      for (const session of sessions) {
+        const date = formatDate(session.created_at.split('T')[0]);
+        cumulativeRP += session.total_rp || 0;
+        cumulativeKills += session.total_kills;
+        cumulativeDamage += session.total_damage;
+        cumulativeDonuts += session.donuts;
+        cumulative1K += session.one_k_games;
+        cumulative2K += session.two_k_games;
 
         if (!dateMap.has(date)) {
           dateMap.set(date, {
             date,
-            rp: 0,
+            rp: cumulativeRP,
             kills: cumulativeKills,
             damage: cumulativeDamage,
             donuts: cumulativeDonuts,
@@ -196,6 +156,7 @@ export default function DashboardPage() {
           });
         } else {
           const point = dateMap.get(date)!;
+          point.rp = cumulativeRP;
           point.kills = cumulativeKills;
           point.damage = cumulativeDamage;
           point.donuts = cumulativeDonuts;
@@ -237,10 +198,44 @@ export default function DashboardPage() {
     
     setCreatingSession(true);
     try {
-      const session = await createLiveSession();
-      await addPlayerToSession(session.id, profile.id);
+      // Create initial doc with host as first player
+      const initialDoc = {
+        players: [{
+          odlId: crypto.randomUUID(),
+          odlierId: profile.id,
+          name: profile.display_name,
+          games: 0,
+          totalDamage: 0,
+          totalKills: 0,
+          oneKGames: 0,
+          twoKGames: 0,
+          donuts: 0,
+          totalRP: 0,
+        }],
+        sessionGames: 0,
+        wins: 0,
+        totalPlacement: 0,
+        placements: [],
+      };
+
+      const res = await fetch('/api/post-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          seasonNumber: season.season_number,
+          hostUserId: profile.id,
+          doc: initialDoc,
+        }),
+      });
+
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Failed to create session');
+
+      // Store write key for host
+      localStorage.setItem(`apex:session:${json.sessionId}:writeKey`, json.writeKey);
+      
       success('Session created!');
-      router.push(`/app/in-game-tracker?code=${session.session_code}`);
+      router.push(`/app/in-game-tracker?code=${json.sessionCode}`);
     } catch (err) {
       console.error('Failed to create session:', err);
       showError('Failed to create session. Please try again.');
@@ -256,22 +251,48 @@ export default function DashboardPage() {
     setJoinError(null);
 
     try {
-      const session = await getLiveSessionByCode(joinCode);
-      
-      if (!session) {
+      // Lookup session by code
+      const res = await fetch(`/api/post-session?code=${joinCode}`);
+      const json = await res.json();
+
+      if (!res.ok || !json.session) {
         setJoinError('Invalid or expired session code.');
         setJoiningSession(false);
         return;
       }
 
-      if (!session.is_active) {
-        setJoinError('This session has ended.');
-        setJoiningSession(false);
-        return;
+      const session = json.session;
+
+      // Add this player to the session doc if not already in it
+      const doc = session.doc;
+      const alreadyInSession = doc.players.some((p: { odlierId: string }) => p.odlierId === profile.id);
+      
+      if (!alreadyInSession) {
+        doc.players.push({
+          odlId: crypto.randomUUID(),
+          odlierId: profile.id,
+          name: profile.display_name,
+          games: 0,
+          totalDamage: 0,
+          totalKills: 0,
+          oneKGames: 0,
+          twoKGames: 0,
+          donuts: 0,
+          totalRP: 0,
+        });
+
+        // Update the session with new player
+        await fetch('/api/post-session', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sessionId: session.id,
+            doc,
+            playerIdUpdating: profile.id,
+          }),
+        });
       }
 
-      // Add player to session
-      await addPlayerToSession(session.id, profile.id);
       success('Joined session!');
       router.push(`/app/in-game-tracker?code=${session.session_code}`);
     } catch (err) {
@@ -294,11 +315,12 @@ export default function DashboardPage() {
   }
 
   if (!profile) {
+    router.push('/gate');
     return (
-      <main className="min-h-[calc(100vh-4rem)] bg-primary flex items-center justify-center px-4">
-        <div className="text-center">
-          <h1 className="text-2xl font-bold text-primary mb-4">Welcome to Apex Trio Tracker</h1>
-          <p className="text-secondary mb-6">Please sign in to continue.</p>
+      <main className="min-h-[calc(100vh-4rem)] bg-primary flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-10 h-10 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+          <p className="text-sm text-secondary">Redirecting to login...</p>
         </div>
       </main>
     );

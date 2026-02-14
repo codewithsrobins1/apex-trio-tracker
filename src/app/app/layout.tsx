@@ -1,14 +1,17 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, usePathname } from 'next/navigation';
 import { supabase } from '@/lib/supabase/client';
 import AppNav from '@/components/AppNav';
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
+  const pathname = usePathname();
   const [loading, setLoading] = useState(true);
   const [authenticated, setAuthenticated] = useState(false);
+  const [isTransitioning, setIsTransitioning] = useState(false);
+  const [displayedChildren, setDisplayedChildren] = useState(children);
 
   useEffect(() => {
     const checkAuth = async () => {
@@ -36,6 +39,16 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     return () => subscription.unsubscribe();
   }, [router]);
 
+  // Handle smooth page transitions
+  useEffect(() => {
+    setIsTransitioning(true);
+    const timer = setTimeout(() => {
+      setDisplayedChildren(children);
+      setIsTransitioning(false);
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [pathname, children]);
+
   if (loading) {
     return (
       <div className="min-h-screen bg-primary flex items-center justify-center">
@@ -54,7 +67,13 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen bg-primary">
       <AppNav />
-      {children}
+      <div 
+        className={`transition-all duration-200 ease-out ${
+          isTransitioning ? 'opacity-0 translate-y-1' : 'opacity-100 translate-y-0'
+        }`}
+      >
+        {displayedChildren}
+      </div>
     </div>
   );
 }

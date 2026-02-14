@@ -50,7 +50,7 @@
   --gradient-accent: linear-gradient(135deg, var(--accent) 0%, var(--accent-dark) 100%);
   
   /* Container */
-  --container-max-width: 1200px;
+  --container-max-width: 1440px;
 }
 
 [data-theme="light"] {
@@ -140,6 +140,29 @@ body {
     opacity: 1;
     transform: translateY(0);
   }
+}
+
+/* Smooth fade transition for route changes */
+.page-fade-enter {
+  opacity: 0;
+  transform: translateY(4px);
+}
+
+.page-fade-enter-active {
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 0.2s ease-out, transform 0.2s ease-out;
+}
+
+.page-fade-exit {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.page-fade-exit-active {
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity 0.15s ease-in, transform 0.15s ease-in;
 }
 
 /* ===== UTILITY CLASSES ===== */

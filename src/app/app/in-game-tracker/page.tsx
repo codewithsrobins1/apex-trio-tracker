@@ -1,36 +1,25 @@
 'use client';
 
-import { Suspense, useEffect, useState, useCallback } from 'react';
+import {
+  Suspense,
+  useEffect,
+  useState,
+  useMemo,
+  useCallback,
+  useRef,
+} from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase/client';
-import { fetchMyProfile, type Profile } from '@/lib/auth';
+import { fetchMyProfile, fetchAllProfiles, type Profile } from '@/lib/auth';
 import { getActiveSeason, type Season } from '@/lib/seasons';
-import {
-  getLiveSessionByCode,
-  getLiveSession,
-  getSessionPlayers,
-  getSessionGames,
-  getGamePlayerStats,
-  addPlayerToSession,
-  updatePlayerRp,
-  updatePlayerRpAsHost,
-  addGame,
-  upsertPlayerGameStats,
-  endSession,
-  type LiveSession,
-  type LiveSessionPlayer,
-  type GameStat,
-  type PlayerGameStat,
-} from '@/lib/liveSessions';
-import { useRealtimeSession } from '@/hooks/useRealtimeSession';
-import { useToast } from '@/components/ToastProvider';
 import ConfirmModal from '@/components/ConfirmModal';
-import EndSessionModal from '@/components/EndSessionModal';
-import SessionCodeBanner from '@/components/SessionCodeBanner';
+import { copyToClipboard } from '@/helpers/copyToClipboard';
 
+// ===== Types =====
+type GameEntry = { damage: number; kills: number };
 type Player = {
   odlId: string;
-  odlierId: string;
+  odlierId: string | null;
   name: string;
   damageInput: string;
   killsInput: string;
@@ -40,504 +29,1563 @@ type Player = {
   oneKGames: number;
   twoKGames: number;
   donuts: number;
+  history: GameEntry[];
   rpInput: string;
-  currentRp: number;
+  totalRP: number;
+  rpHistory: number[];
+};
+
+type GameFrame = {
+  entries: { odlId: string; entry: GameEntry }[];
+  placement: number;
+};
+
+type SessionDoc = {
+  players: {
+    odlId: string;
+    odlierId: string | null;
+    name: string;
+    games: number;
+    totalDamage: number;
+    totalKills: number;
+    oneKGames: number;
+    twoKGames: number;
+    donuts: number;
+    totalRP: number;
+  }[];
+  sessionGames: number;
+  wins: number;
+  totalPlacement: number;
+  placements: number[];
+  lastUpdated?: string;
 };
 
 function InGameTrackerContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const sessionCode = searchParams.get('code');
-  const { success, error: showError } = useToast();
+  const sessionCodeFromUrl = searchParams.get('code');
 
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [season, setSeason] = useState<Season | null>(null);
-  const [session, setSession] = useState<LiveSession | null>(null);
+  const [allProfiles, setAllProfiles] = useState<Profile[]>([]);
+
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const [isHost, setIsHost] = useState(false);
+
+  const makeNewPlayer = useCallback(
+    (odlierId: string | null = null, name: string = ''): Player => ({
+      odlId: crypto.randomUUID(),
+      odlierId,
+      name,
+      damageInput: '',
+      killsInput: '',
+      games: 0,
+      totalDamage: 0,
+      totalKills: 0,
+      oneKGames: 0,
+      twoKGames: 0,
+      donuts: 0,
+      history: [],
+      rpInput: '',
+      totalRP: 0,
+      rpHistory: [],
+    }),
+    []
+  );
 
   const [players, setPlayers] = useState<Player[]>([]);
   const [sessionGames, setSessionGames] = useState(0);
-  const [gameHistory, setGameHistory] = useState<GameStat[]>([]);
+  const [gameHistory, setGameHistory] = useState<GameFrame[]>([]);
+  const [wins, setWins] = useState(0);
+  const [totalPlacement, setTotalPlacement] = useState(0);
+  const [placements, setPlacements] = useState<number[]>([]);
+  const [placementInput, setPlacementInput] = useState('');
 
-  const [showEndSessionModal, setShowEndSessionModal] = useState(false);
-  const [showConfirmModal, setShowConfirmModal] = useState(false);
-  const [confirmAction, setConfirmAction] = useState<(() => Promise<void>) | null>(null);
-  const [confirmMessage, setConfirmMessage] = useState('');
+  const [showNewSessionConfirm, setShowNewSessionConfirm] = useState(false);
+  const [showEndSession, setShowEndSession] = useState(false);
+  const [showAddPlayer, setShowAddPlayer] = useState(false);
+  const [selectedPlayerIds, setSelectedPlayerIds] = useState<string[]>([]);
+  const [posting, setPosting] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [modalError, setModalError] = useState<string | null>(null);
+  
+  // Session code state
+  const [sessionCode, setSessionCode] = useState<string | null>(sessionCodeFromUrl);
+  
+  // NEW: Notification modal state
+  const [showNotification, setShowNotification] = useState(false);
+  const [notificationTitle, setNotificationTitle] = useState('');
+  const [notificationMessage, setNotificationMessage] = useState('');
+  const [notificationType, setNotificationType] = useState<'success' | 'error' | 'info'>('info');
+  
+  // NEW: Refresh state
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
+  const autoRefreshInterval = useRef<NodeJS.Timeout | null>(null);
+  
+  // NEW: Saving RP state
+  const [savingRP, setSavingRP] = useState<string | null>(null); // odlId of player being saved
 
-  const [savingRp, setSavingRp] = useState<string | null>(null);
-  const [addingGame, setAddingGame] = useState(false);
+  const MAX_PLAYERS = 3;
 
-  // Load session data
-  const loadSessionData = useCallback(async () => {
-    if (!session) return;
+  // Helper to show notification modal
+  const showNotificationModal = (title: string, message: string, type: 'success' | 'error' | 'info' = 'info') => {
+    setNotificationTitle(title);
+    setNotificationMessage(message);
+    setNotificationType(type);
+    setShowNotification(true);
+  };
 
+  // Helper to save full state to localStorage
+  const saveToLocalStorage = useCallback((sessionId: string, doc: SessionDoc) => {
     try {
-      const [playersData, gamesData] = await Promise.all([
-        getSessionPlayers(session.id),
-        getSessionGames(session.id),
-      ]);
-
-      // Build player objects with aggregated stats
-      const playerMap = new Map<string, Player>();
-      
-      for (const p of playersData) {
-        playerMap.set(p.user_id, {
-          odlId: p.id,
-          odlierId: p.user_id,
-          name: p.display_name || 'Unknown',
-          damageInput: '',
-          killsInput: '',
-          games: 0,
-          totalDamage: 0,
-          totalKills: 0,
-          oneKGames: 0,
-          twoKGames: 0,
-          donuts: 0,
-          rpInput: '',
-          currentRp: p.current_rp,
-        });
-      }
-
-      // Aggregate stats from games
-      for (const game of gamesData) {
-        const stats = await getGamePlayerStats(game.id);
-        for (const stat of stats) {
-          const player = playerMap.get(stat.user_id);
-          if (player) {
-            player.games++;
-            player.totalDamage += stat.damage;
-            player.totalKills += stat.kills;
-            if (stat.damage >= 1000) player.oneKGames++;
-            if (stat.damage >= 2000) player.twoKGames++;
-            if (stat.kills === 0) player.donuts++;
-          }
-        }
-      }
-
-      setPlayers(Array.from(playerMap.values()));
-      setGameHistory(gamesData);
-      setSessionGames(gamesData.length);
+      localStorage.setItem(
+        `apex:session:${sessionId}:fullState`,
+        JSON.stringify({
+          ...doc,
+          lastUpdated: new Date().toISOString(),
+        })
+      );
     } catch (err) {
-      console.error('Failed to load session data:', err);
+      console.error('Failed to save to localStorage:', err);
     }
-  }, [session]);
+  }, []);
 
-  // Realtime subscriptions (no connection warnings - app works fine without realtime)
-  useRealtimeSession({
-    sessionId: session?.id ?? null,
-    onPlayersChange: loadSessionData,
-    onGamesChange: loadSessionData,
-    onStatsChange: loadSessionData,
-  });
+  // Helper to load from localStorage
+  const loadFromLocalStorage = useCallback((sessionId: string): SessionDoc | null => {
+    try {
+      const stored = localStorage.getItem(`apex:session:${sessionId}:fullState`);
+      if (!stored) return null;
+      return JSON.parse(stored);
+    } catch (err) {
+      console.error('Failed to load from localStorage:', err);
+      return null;
+    }
+  }, []);
 
-  // Initial load
-  useEffect(() => {
-    const init = async () => {
-      try {
-        const [profileData, seasonData] = await Promise.all([
-          fetchMyProfile(),
-          getActiveSeason(),
-        ]);
+  const loadData = useCallback(async () => {
+    try {
+      setError(null);
+      const [profileData, seasonData, profiles] = await Promise.all([
+        fetchMyProfile(),
+        getActiveSeason(),
+        fetchAllProfiles(),
+      ]);
+      setProfile(profileData);
+      setSeason(seasonData);
+      setAllProfiles(profiles);
 
-        setProfile(profileData);
-        setSeason(seasonData);
+      if (!profileData || !seasonData) {
+        setLoading(false);
+        return;
+      }
 
-        if (!profileData || !seasonData || !sessionCode) {
+      if (sessionCodeFromUrl) {
+        // Lookup session by code
+        const res = await fetch(`/api/post-session?code=${sessionCodeFromUrl}`);
+        const json = await res.json();
+
+        if (!res.ok || !json.session) {
+          setError('Session not found');
           setLoading(false);
           return;
         }
 
-        // Find session by code
-        const sessionData = await getLiveSessionByCode(sessionCode);
+        const sessionData = json.session;
+        const doc = sessionData.doc as SessionDoc;
+        const writeKey = localStorage.getItem(
+          `apex:session:${sessionData.id}:writeKey`
+        );
+        const isHostUser = writeKey !== null && sessionData.host_user_id === profileData.id;
+
+        setIsHost(isHostUser);
+        setSessionId(sessionData.id);
+        setSessionCode(sessionData.session_code);
+
+        // Try to load from localStorage first
+        const localData = loadFromLocalStorage(sessionData.id);
         
-        if (!sessionData) {
-          showError('Session not found or has expired.');
-          router.push('/app');
-          return;
-        }
+        // Use database data but merge with localStorage if available and newer
+        const finalDoc = localData && localData.lastUpdated && new Date(localData.lastUpdated) > new Date(sessionData.updated_at)
+          ? localData
+          : doc;
 
-        if (!sessionData.is_active) {
-          showError('This session has ended.');
-          router.push('/app');
-          return;
-        }
+        setPlayers(
+          finalDoc.players.map((p) => ({
+            ...makeNewPlayer(p.odlierId, p.name),
+            odlId: p.odlId,
+            odlierId: p.odlierId,
+            name: p.name,
+            games: p.games,
+            totalDamage: p.totalDamage,
+            totalKills: p.totalKills,
+            oneKGames: p.oneKGames,
+            twoKGames: p.twoKGames,
+            donuts: p.donuts,
+            totalRP: p.totalRP,
+          }))
+        );
+        setSessionGames(finalDoc.sessionGames);
+        setWins(finalDoc.wins);
+        setTotalPlacement(finalDoc.totalPlacement);
+        setPlacements(finalDoc.placements || []);
+        
+        setLastRefreshed(new Date());
+      } else {
+        setPlayers([makeNewPlayer(profileData.id, profileData.display_name)]);
+        setIsHost(true);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to load';
+      setError(message);
+    } finally {
+      setLoading(false);
+    }
+  }, [sessionCodeFromUrl, makeNewPlayer, loadFromLocalStorage]);
 
-        setSession(sessionData);
-        setIsHost(sessionData.host_user_id === profileData.id);
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
 
-        // Try to add player to session (will just return existing if already in)
-        try {
-          await addPlayerToSession(sessionData.id, profileData.id);
-        } catch (err) {
-          // Player might already be in session, that's ok
-          console.log('Player already in session or error:', err);
-        }
+  // NEW: Manual refresh function
+  const handleRefresh = async () => {
+    if (!sessionId) return;
+    
+    setRefreshing(true);
+    try {
+      const { data: sessionData, error: sessionError } = await supabase
+        .from('sessions')
+        .select('*')
+        .eq('id', sessionId)
+        .maybeSingle();
 
-        setLoading(false);
-      } catch (err) {
-        console.error('Failed to initialize:', err);
-        showError('Failed to load session.');
-        setLoading(false);
+      if (sessionError) throw sessionError;
+
+      if (sessionData) {
+        const doc = sessionData.doc as SessionDoc;
+        
+        setPlayers(
+          doc.players.map((p) => ({
+            ...makeNewPlayer(p.odlierId, p.name),
+            odlId: p.odlId,
+            odlierId: p.odlierId,
+            name: p.name,
+            games: p.games,
+            totalDamage: p.totalDamage,
+            totalKills: p.totalKills,
+            oneKGames: p.oneKGames,
+            twoKGames: p.twoKGames,
+            donuts: p.donuts,
+            totalRP: p.totalRP,
+          }))
+        );
+        setSessionGames(doc.sessionGames);
+        setWins(doc.wins);
+        setTotalPlacement(doc.totalPlacement);
+        setPlacements(doc.placements || []);
+        
+        setLastRefreshed(new Date());
+        
+        // Save to localStorage
+        saveToLocalStorage(sessionId, doc);
+      }
+    } catch (err) {
+      console.error('Failed to refresh:', err);
+      showNotificationModal('Refresh Failed', 'Could not fetch latest data', 'error');
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  // NEW: Auto-refresh every 60 seconds
+  useEffect(() => {
+    if (!sessionId || isHost) return; // Only auto-refresh for non-hosts
+    
+    autoRefreshInterval.current = setInterval(() => {
+      handleRefresh();
+    }, 60000); // 60 seconds
+
+    return () => {
+      if (autoRefreshInterval.current) {
+        clearInterval(autoRefreshInterval.current);
       }
     };
+  }, [sessionId, isHost]);
 
-    init();
-  }, [sessionCode, router, showError]);
+  const currentDoc: SessionDoc = useMemo(
+    () => ({
+      players: players.map((p) => ({
+        odlId: p.odlId,
+        odlierId: p.odlierId,
+        name: p.name,
+        games: p.games,
+        totalDamage: p.totalDamage,
+        totalKills: p.totalKills,
+        oneKGames: p.oneKGames,
+        twoKGames: p.twoKGames,
+        donuts: p.donuts,
+        totalRP: p.totalRP,
+      })),
+      sessionGames,
+      wins,
+      totalPlacement,
+      placements,
+    }),
+    [players, sessionGames, wins, totalPlacement, placements]
+  );
 
-  // Load data when session is set
+  const saveTimer = useRef<NodeJS.Timeout | null>(null);
+  const lastSavedDoc = useRef<string>('');
+
   useEffect(() => {
-    if (session) {
-      loadSessionData();
-    }
-  }, [session, loadSessionData]);
+    if (!sessionId) return;
+    const docString = JSON.stringify(currentDoc);
+    if (docString === lastSavedDoc.current) return;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
 
-  // Handle RP change
-  const handleRpChange = async (player: Player, newRpInput: string) => {
-    // Update local state immediately
-    setPlayers(prev => prev.map(p => 
-      p.odlierId === player.odlierId ? { ...p, rpInput: newRpInput } : p
-    ));
-  };
-
-  // Save RP to database
-  const handleRpBlur = async (player: Player) => {
-    if (!session || !profile) return;
-    
-    const newRp = parseInt(player.rpInput) || 0;
-    if (newRp === player.currentRp) return;
-
-    setSavingRp(player.odlierId);
-    
-    try {
-      let result;
-      
-      // If current user is editing their own RP, or host is editing anyone's
-      if (player.odlierId === profile.id) {
-        result = await updatePlayerRp(session.id, newRp);
-      } else if (isHost) {
-        result = await updatePlayerRpAsHost(session.id, player.odlierId, newRp);
-      } else {
-        showError('You can only edit your own RP.');
-        // Reset input
-        setPlayers(prev => prev.map(p => 
-          p.odlierId === player.odlierId ? { ...p, rpInput: '' } : p
-        ));
-        setSavingRp(null);
-        return;
+    saveTimer.current = setTimeout(async () => {
+      try {
+        const writeKey = localStorage.getItem(
+          `apex:session:${sessionId}:writeKey`
+        );
+        await fetch('/api/post-session', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId, writeKey, doc: currentDoc }),
+        });
+        lastSavedDoc.current = docString;
+        
+        // Save to localStorage as backup
+        saveToLocalStorage(sessionId, currentDoc);
+      } catch (err) {
+        console.error('Failed to save session:', err);
       }
+    }, 500);
 
-      if (result.success) {
-        success('RP saved!');
-        // Update local state with new RP
-        setPlayers(prev => prev.map(p => 
-          p.odlierId === player.odlierId ? { ...p, currentRp: newRp, rpInput: '' } : p
-        ));
-      } else {
-        showError(result.error || 'Failed to save RP.');
-      }
-    } catch (err) {
-      console.error('Failed to save RP:', err);
-      showError('Failed to save RP. Please try again.');
-    } finally {
-      setSavingRp(null);
-    }
-  };
+    return () => {
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+    };
+  }, [currentDoc, sessionId, saveToLocalStorage]);
 
-  // Handle damage/kills input change
-  const handleInputChange = (playerId: string, field: 'damageInput' | 'killsInput', value: string) => {
-    setPlayers(prev => prev.map(p =>
-      p.odlierId === playerId ? { ...p, [field]: value } : p
-    ));
-  };
+  // Realtime subscription for non-host players
+  useEffect(() => {
+    if (!sessionId || isHost) return;
 
-  // Add game
-  const handleAddGame = async () => {
-    if (!session || !isHost) return;
+    const channel = supabase
+      .channel(`session-${sessionId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'sessions',
+          filter: `id=eq.${sessionId}`,
+        },
+        (payload) => {
+          const doc = payload.new.doc as SessionDoc;
+          
+          setPlayers((currentPlayers) => {
+            const myCurrentPlayer = currentPlayers.find(
+              (p) => p.odlierId === profile?.id
+            );
 
-    // Validate inputs
-    const invalidPlayers = players.filter(p => {
-      const damage = parseInt(p.damageInput);
-      const kills = parseInt(p.killsInput);
-      return isNaN(damage) || isNaN(kills) || damage < 0 || kills < 0;
-    });
+            return doc.players.map((p) => {
+              const isMe = p.odlierId === profile?.id;
+              return {
+                ...makeNewPlayer(p.odlierId, p.name),
+                odlId: p.odlId,
+                odlierId: p.odlierId,
+                name: p.name,
+                games: p.games,
+                totalDamage: p.totalDamage,
+                totalKills: p.totalKills,
+                oneKGames: p.oneKGames,
+                twoKGames: p.twoKGames,
+                donuts: p.donuts,
+                // Preserve local RP state for the current user
+                totalRP: isMe && myCurrentPlayer ? myCurrentPlayer.totalRP : p.totalRP,
+                rpInput: isMe && myCurrentPlayer ? myCurrentPlayer.rpInput : '',
+                rpHistory: isMe && myCurrentPlayer ? myCurrentPlayer.rpHistory : [],
+              };
+            });
+          });
+          
+          setSessionGames(doc.sessionGames);
+          setWins(doc.wins);
+          setTotalPlacement(doc.totalPlacement);
+          setPlacements(doc.placements || []);
+          setLastRefreshed(new Date());
+        }
+      )
+      .subscribe((status) => {
+        console.log('Realtime subscription status:', status);
+      });
 
-    if (invalidPlayers.length > 0) {
-      showError('Please enter valid damage and kills for all players.');
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [sessionId, isHost, profile?.id, makeNewPlayer]);
+
+  const addToSelection = (playerId: string) => {
+    if (selectedPlayerIds.length + players.length >= MAX_PLAYERS) {
+      setModalError(`Maximum ${MAX_PLAYERS} players allowed`);
+      setTimeout(() => setModalError(null), 3000);
       return;
     }
+    setModalError(null);
+    setSelectedPlayerIds((prev) => [...prev, playerId]);
+  };
 
-    setAddingGame(true);
+  const removeFromSelection = (playerId: string) => {
+    setModalError(null);
+    setSelectedPlayerIds((prev) => prev.filter((id) => id !== playerId));
+  };
 
+  const confirmAddPlayers = () => {
+    if (!isHost) return;
+    
+    const newPlayers = selectedPlayerIds
+      .map((id) => {
+        const selectedProfile = allProfiles.find((p) => p.id === id);
+        if (!selectedProfile) return null;
+        if (players.some((p) => p.odlierId === id)) return null;
+        return makeNewPlayer(selectedProfile.id, selectedProfile.display_name);
+      })
+      .filter((p): p is Player => p !== null);
+
+    setPlayers((prev) => [...prev, ...newPlayers]);
+    setShowAddPlayer(false);
+    setSelectedPlayerIds([]);
+    setModalError(null);
+  };
+
+  const cancelAddPlayers = () => {
+    setShowAddPlayer(false);
+    setSelectedPlayerIds([]);
+    setModalError(null);
+  };
+
+  const removePlayer = (odlId: string) => {
+    if (!isHost) return;
+    setPlayers((p) => p.filter((pl) => pl.odlId !== odlId));
+  };
+
+  const updateField = <K extends keyof Player>(
+    odlId: string,
+    field: K,
+    value: Player[K]
+  ) => {
+    const player = players.find((p) => p.odlId === odlId);
+    if (!player) return;
+    const isRpField =
+      field === 'rpInput' || field === 'totalRP' || field === 'rpHistory';
+    const isMyPlayer = player.odlierId === profile?.id;
+    if (!isHost && !isRpField) return;
+    if (!isHost && isRpField && !isMyPlayer) return;
+    setPlayers((prev) =>
+      prev.map((pl) => (pl.odlId === odlId ? { ...pl, [field]: value } : pl))
+    );
+  };
+
+  const addGameAll = () => {
+    if (!isHost) return;
+    const placement = parseInt(placementInput, 10);
+    if (!Number.isFinite(placement) || placement < 1 || placement > 20) {
+      setError('Please enter a valid placement (1-20)');
+      return;
+    }
+    const anyProvided = players.some(
+      (p) => (p.damageInput ?? '') !== '' || (p.killsInput ?? '') !== ''
+    );
+    if (!anyProvided) {
+      setError('Please enter stats for at least one player');
+      return;
+    }
+    setError(null);
+
+    const frame: GameFrame = { entries: [], placement };
+    setPlayers((prev) =>
+      prev.map((pl) => {
+        const dmg = Math.max(0, Number(pl.damageInput) || 0);
+        const k = Math.max(0, Number(pl.killsInput) || 0);
+        const isDonut = dmg === 0 && k === 0;
+        frame.entries.push({
+          odlId: pl.odlId,
+          entry: { damage: dmg, kills: k },
+        });
+        return {
+          ...pl,
+          games: pl.games + 1,
+          totalDamage: pl.totalDamage + dmg,
+          totalKills: pl.totalKills + k,
+          oneKGames: pl.oneKGames + (dmg >= 1000 && dmg < 2000 ? 1 : 0),
+          twoKGames: pl.twoKGames + (dmg >= 2000 ? 1 : 0),
+          donuts: pl.donuts + (isDonut ? 1 : 0),
+          damageInput: '',
+          killsInput: '',
+          history: [...pl.history, { damage: dmg, kills: k }],
+        };
+      })
+    );
+    setSessionGames((g) => g + 1);
+    setGameHistory((h) => [...h, frame]);
+    setTotalPlacement((tp) => tp + placement);
+    setPlacements((p) => [...p, placement]);
+    setPlacementInput('');
+    if (placement === 1) setWins((w) => w + 1);
+  };
+
+  const undoGameAll = () => {
+    if (!isHost || gameHistory.length === 0) return;
+    const last = gameHistory[gameHistory.length - 1];
+    setPlayers((prev) =>
+      prev.map((pl) => {
+        const rec = last.entries.find((e) => e.odlId === pl.odlId);
+        if (!rec) return pl;
+        const { damage, kills } = rec.entry;
+        const wasDonut = damage === 0 && kills === 0;
+        return {
+          ...pl,
+          games: Math.max(0, pl.games - 1),
+          totalDamage: Math.max(0, pl.totalDamage - damage),
+          totalKills: Math.max(0, pl.totalKills - kills),
+          oneKGames: Math.max(
+            0,
+            pl.oneKGames - (damage >= 1000 && damage < 2000 ? 1 : 0)
+          ),
+          twoKGames: Math.max(0, pl.twoKGames - (damage >= 2000 ? 1 : 0)),
+          donuts: Math.max(0, pl.donuts - (wasDonut ? 1 : 0)),
+          damageInput: String(damage || ''),
+          killsInput: String(kills || ''),
+          history: pl.history.slice(0, -1),
+        };
+      })
+    );
+    setSessionGames((g) => Math.max(0, g - 1));
+    setGameHistory((h) => h.slice(0, -1));
+    setTotalPlacement((tp) => Math.max(0, tp - last.placement));
+    setPlacements((p) => p.slice(0, -1));
+    setPlacementInput(String(last.placement));
+    if (last.placement === 1) setWins((w) => Math.max(0, w - 1));
+  };
+
+  // UPDATED: commitRP now saves to database immediately with correct data
+  const commitRP = async (odlId: string) => {
+    const player = players.find((p) => p.odlId === odlId);
+    if (!player) return;
+    if (!isHost && player.odlierId !== profile?.id) return;
+    const delta = Number(player.rpInput);
+    if (!Number.isFinite(delta) || player.rpInput === '') return;
+    
+    const newTotalRP = player.totalRP + delta;
+    const newRPHistory = [...player.rpHistory, delta];
+    
+    // Show saving state
+    setSavingRP(odlId);
+    
+    // Update local state first
+    setPlayers((prev) =>
+      prev.map((pl) =>
+        pl.odlId === odlId
+          ? {
+              ...pl,
+              totalRP: newTotalRP,
+              rpHistory: newRPHistory,
+              rpInput: '',
+            }
+          : pl
+      )
+    );
+
+    // Save to database immediately with FRESH data
+    if (sessionId && player.odlierId) {
+      try {
+        // Create updated doc with the new RP value
+        const updatedDoc = {
+          ...currentDoc,
+          players: currentDoc.players.map((p) =>
+            p.odlId === odlId
+              ? { ...p, totalRP: newTotalRP }
+              : p
+          ),
+        };
+
+        // Get writeKey (only host has this)
+        const writeKey = localStorage.getItem(`apex:session:${sessionId}:writeKey`);
+        
+        const response = await fetch('/api/post-session', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            sessionId, 
+            writeKey: writeKey || null, // Send null if not host
+            doc: updatedDoc,
+            playerIdUpdating: player.odlierId, // Tell API which player is updating
+          }),
+        });
+        
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`Failed to save RP: ${errorText}`);
+        }
+        
+        // Save to localStorage
+        saveToLocalStorage(sessionId, updatedDoc);
+        
+        console.log(`✅ RP saved: ${player.name} +${delta} (Total: ${newTotalRP})`);
+      } catch (err) {
+        console.error('Failed to save RP to database:', err);
+        showNotificationModal('Error', `Failed to save RP: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error');
+      } finally {
+        setSavingRP(null);
+      }
+    } else {
+      setSavingRP(null);
+    }
+  };
+
+  const undoRP = (odlId: string) => {
+    const player = players.find((p) => p.odlId === odlId);
+    if (!player || player.rpHistory.length === 0) return;
+    if (!isHost && player.odlierId !== profile?.id) return;
+    const last = player.rpHistory[player.rpHistory.length - 1];
+    setPlayers((prev) =>
+      prev.map((pl) =>
+        pl.odlId === odlId
+          ? {
+              ...pl,
+              totalRP: pl.totalRP - last,
+              rpHistory: pl.rpHistory.slice(0, -1),
+              rpInput: String(last),
+            }
+          : pl
+      )
+    );
+  };
+
+  const createSession = async () => {
+    if (!profile || !season) return;
     try {
-      // Create game
-      const game = await addGame(session.id, sessionGames + 1);
+      setError(null);
+      const res = await fetch('/api/post-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          seasonNumber: season.season_number,
+          hostUserId: profile.id,
+          doc: currentDoc,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Failed to create session');
+      const newSessionId = json.sessionId;
+      const writeKey = json.writeKey;
+      const newSessionCode = json.sessionCode;
+      
+      localStorage.setItem(`apex:session:${newSessionId}:writeKey`, writeKey);
+      setSessionId(newSessionId);
+      setSessionCode(newSessionCode);
+      setIsHost(true);
+      
+      // Copy the code to clipboard
+      const ok = await copyToClipboard(newSessionCode);
+      if (ok) {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      }
+      router.push(`/app/in-game-tracker?code=${newSessionCode}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create session');
+    }
+  };
 
-      // Add stats for each player
-      for (const player of players) {
-        const damage = parseInt(player.damageInput) || 0;
-        const kills = parseInt(player.killsInput) || 0;
-        await upsertPlayerGameStats(game.id, player.odlierId, damage, kills);
+  const resetSession = () => {
+    setPlayers([
+      makeNewPlayer(profile?.id || null, profile?.display_name || ''),
+    ]);
+    setSessionGames(0);
+    setGameHistory([]);
+    setWins(0);
+    setTotalPlacement(0);
+    setPlacements([]);
+    setPlacementInput('');
+    setSessionId(null);
+    setSessionCode(null);
+    setShowNewSessionConfirm(false);
+    router.push('/app/in-game-tracker');
+  };
+
+  const handleCopyLink = async () => {
+    if (!sessionCode) return;
+    const ok = await copyToClipboard(sessionCode);
+    if (ok) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const handleCopyCode = async () => {
+    if (!sessionCode) return;
+    const ok = await copyToClipboard(sessionCode);
+    if (ok) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  // Save session to DB without posting to Discord
+  const saveSessionOnly = async () => {
+    if (!season) {
+      showNotificationModal('Error', 'No active season found', 'error');
+      return;
+    }
+    
+    if (!sessionId) {
+      showNotificationModal('Error', 'Please save the session first', 'error');
+      return;
+    }
+    
+    try {
+      setSaving(true);
+      setError(null);
+      
+      const res = await fetch('/api/end-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId,
+          postToDiscord: false,
+        }),
+      });
+
+      const data = await res.json();
+      
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to end session');
       }
 
-      // Clear inputs
-      setPlayers(prev => prev.map(p => ({ ...p, damageInput: '', killsInput: '' })));
-      success('Game added!');
+      setShowEndSession(false);
+
+      const messages = [
+        'Session saved to database ✅',
+        '',
+        `Stats saved for ${data.statsInserted} player(s)`,
+      ];
+      
+      if (data.errors && data.errors.length > 0) {
+        messages.push('', '⚠️ Warnings:', ...data.errors);
+      }
+      
+      showNotificationModal(
+        data.errors?.length > 0 ? 'Saved with Warnings' : 'Session Saved!',
+        messages.join('\n'),
+        data.errors?.length > 0 ? 'error' : 'success'
+      );
+      
+      // Redirect to dashboard after a short delay
+      setTimeout(() => {
+        router.push('/app');
+      }, 2000);
     } catch (err) {
-      console.error('Failed to add game:', err);
-      showError('Failed to add game. Please try again.');
+      const message = err instanceof Error ? err.message : 'Failed to save';
+      showNotificationModal('Error', message, 'error');
+      setError(message);
     } finally {
-      setAddingGame(false);
+      setSaving(false);
     }
   };
 
-  // End session
-  const handleEndSession = async (postToDiscord: boolean) => {
-    if (!session || !isHost) return;
-
+  // Post to Discord and save all stats
+  const postToDiscord = async () => {
+    if (!season) {
+      showNotificationModal('Error', 'No active season found', 'error');
+      return;
+    }
+    
+    if (!sessionId) {
+      showNotificationModal('Error', 'Please save the session first', 'error');
+      return;
+    }
+    
     try {
-      await endSession(session.id, postToDiscord);
-      success(postToDiscord ? 'Session ended and posted to Discord!' : 'Session ended!');
-      router.push('/app');
+      setPosting(true);
+      setError(null);
+      
+      const res = await fetch('/api/end-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId,
+          postToDiscord: true,
+        }),
+      });
+
+      const data = await res.json();
+      
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to end session');
+      }
+
+      setShowEndSession(false);
+
+      const messages = [
+        data.discordPosted ? 'Posted to Discord ✅' : 'Discord post failed ⚠️',
+        '',
+        `Stats saved for ${data.statsInserted} player(s)`,
+      ];
+      
+      if (data.errors && data.errors.length > 0) {
+        messages.push('', '⚠️ Warnings:', ...data.errors);
+      }
+      
+      showNotificationModal(
+        data.errors?.length > 0 ? 'Posted with Warnings' : 'Success!',
+        messages.join('\n'),
+        data.errors?.length > 0 ? 'error' : 'success'
+      );
+      
+      // Redirect to dashboard after a short delay
+      setTimeout(() => {
+        router.push('/app');
+      }, 2000);
     } catch (err) {
-      console.error('Failed to end session:', err);
-      showError('Failed to end session. Please try again.');
+      const message = err instanceof Error ? err.message : 'Failed to post';
+      showNotificationModal('Error', message, 'error');
+      setError(message);
+    } finally {
+      setPosting(false);
     }
   };
 
-  // Leave session (non-host)
-  const handleLeaveSession = () => {
-    router.push('/app');
-  };
+  const avgPlacement = sessionGames > 0 ? totalPlacement / sessionGames : 0;
+  const { groupAvgDamage } = useMemo(() => {
+    const withGames = players.filter((p) => p.games > 0);
+    if (withGames.length === 0) return { groupAvgDamage: 0 };
+    return {
+      groupAvgDamage:
+        withGames.reduce((acc, p) => acc + p.totalDamage / p.games, 0) /
+        withGames.length,
+    };
+  }, [players]);
 
-  if (loading) {
+  const derived = useMemo(
+    () =>
+      players.map((p) => ({
+        odlId: p.odlId,
+        avgDamage: p.games > 0 ? p.totalDamage / p.games : 0,
+      })),
+    [players]
+  );
+
+  const availableProfiles = useMemo(() => {
+    const currentPlayerIds = players.map((p) => p.odlierId).filter((id): id is string => id !== null);
+    return allProfiles.filter(
+      (p) => !currentPlayerIds.includes(p.id) && !selectedPlayerIds.includes(p.id)
+    );
+  }, [allProfiles, players, selectedPlayerIds]);
+
+  const selectedProfiles = useMemo(() => {
+    return selectedPlayerIds
+      .map((id) => allProfiles.find((p) => p.id === id))
+      .filter((p): p is Profile => p !== undefined);
+  }, [selectedPlayerIds, allProfiles]);
+
+  const primaryButton =
+    'inline-flex items-center justify-center rounded-xl border border-[#E03A3E] bg-[#E03A3E] px-4 py-2 text-xs sm:text-sm font-medium text-white shadow-sm hover:bg-[#B71C1C] hover:border-[#B71C1C] transition disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer';
+  const secondaryButton =
+    'inline-flex items-center justify-center rounded-xl border border-[#2A2E32] bg-[#181B1F] px-4 py-2 text-xs sm:text-sm font-medium text-slate-200 shadow-sm hover:bg-[#20242A] hover:border-[#E03A3E] transition disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer';
+  const successButton =
+    'inline-flex items-center justify-center rounded-xl border border-green-600 bg-green-600 px-4 py-2 text-xs sm:text-sm font-medium text-white shadow-sm hover:bg-green-700 hover:border-green-700 transition disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer';
+  const inputClass =
+    'w-full rounded-xl border border-[#2A2E32] bg-[#0E1115] px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-[#E03A3E] focus:ring-1 focus:ring-[#E03A3E] disabled:opacity-50 disabled:cursor-not-allowed';
+
+  if (loading)
     return (
-      <main className="min-h-[calc(100vh-4rem)] bg-primary flex items-center justify-center">
-        <div className="flex flex-col items-center gap-4">
-          <div className="w-10 h-10 border-2 border-accent border-t-transparent rounded-full animate-spin" />
-          <p className="text-sm text-secondary">Loading session...</p>
-        </div>
+      <main className="min-h-screen bg-[#050608] text-slate-100 px-4 py-10 grid place-items-center">
+        <div className="text-sm text-slate-400">Loading…</div>
       </main>
     );
-  }
-
-  if (!profile || !season || !session) {
+  if (!profile)
     return (
-      <main className="min-h-[calc(100vh-4rem)] bg-primary flex items-center justify-center px-4">
-        <div className="card p-8 text-center max-w-md">
-          <div className="text-4xl mb-4">🎮</div>
-          <h2 className="text-xl font-bold text-primary mb-2">Session Not Found</h2>
-          <p className="text-secondary text-sm mb-6">
-            The session may have ended or the code is invalid.
+      <main className="min-h-screen bg-[#050608] text-slate-100 px-4 py-10 grid place-items-center">
+        <div className="text-center">
+          <div className="text-lg font-semibold mb-2">Not signed in</div>
+          <p className="text-sm text-slate-400 mb-4">
+            Please sign in to use the tracker.
           </p>
-          <button onClick={() => router.push('/app')} className="btn-primary">
-            Back to Dashboard
+          <button onClick={() => router.push('/')} className={secondaryButton}>
+            Go Home
           </button>
         </div>
       </main>
     );
-  }
+  if (!season)
+    return (
+      <main className="min-h-screen bg-[#050608] text-slate-100 px-4 py-10 grid place-items-center">
+        <div className="text-center">
+          <div className="text-lg font-semibold mb-2">No active season</div>
+          <p className="text-sm text-slate-400 mb-4">
+            Set a season first to start tracking.
+          </p>
+          <button onClick={() => router.push('/')} className={secondaryButton}>
+            Go Home
+          </button>
+        </div>
+      </main>
+    );
 
   return (
-    <main className="min-h-[calc(100vh-4rem)] bg-primary py-6">
-      <div className="page-container page-transition">
-        {/* Session Code Banner */}
-        <SessionCodeBanner code={session.session_code} isHost={isHost} />
-
-        {/* Header */}
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <h1 className="text-2xl font-bold text-primary">Live Session</h1>
-            <p className="text-sm text-secondary">
-              Season {season.season_number} • {sessionGames} games played
-            </p>
-          </div>
-          <div className="flex items-center gap-3">
-            <div className="live-indicator">
-              <span className="live-dot" />
-              <span>Live</span>
-            </div>
-          </div>
-        </div>
-
-        {/* Players Table */}
-        <div className="card overflow-hidden mb-6">
-          <div className="p-4 border-b border-themed">
-            <div className="section-header mb-0">
-              <div className="indicator" />
-              <div className="title">Players ({players.length}/3)</div>
-            </div>
-          </div>
-
-          <div className="overflow-x-auto">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Player</th>
-                  <th className="text-center">Games</th>
-                  <th className="text-center">Damage</th>
-                  <th className="text-center">Kills</th>
-                  <th className="text-center">1K</th>
-                  <th className="text-center">2K</th>
-                  <th className="text-center">Donuts</th>
-                  <th className="text-center">RP</th>
-                  {isHost && <th className="text-center">Add Game</th>}
-                </tr>
-              </thead>
-              <tbody>
-                {players.map((player) => (
-                  <tr key={player.odlierId}>
-                    <td>
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium text-primary">{player.name}</span>
-                        {player.odlierId === session.host_user_id && (
-                          <span className="badge badge-host">HOST</span>
-                        )}
-                      </div>
-                    </td>
-                    <td className="text-center">{player.games}</td>
-                    <td className="text-center">{player.totalDamage.toLocaleString()}</td>
-                    <td className="text-center">{player.totalKills}</td>
-                    <td className="text-center text-warning font-medium">{player.oneKGames}</td>
-                    <td className="text-center text-warning font-medium">{player.twoKGames}</td>
-                    <td className="text-center text-purple-400">{player.donuts}</td>
-                    <td className="text-center">
-                      <div className="flex items-center justify-center gap-2">
-                        {/* Show RP input for own user, or all users if host */}
-                        {(player.odlierId === profile.id || isHost) ? (
-                          <div className="relative">
-                            <input
-                              type="number"
-                              value={player.rpInput || ''}
-                              onChange={(e) => handleRpChange(player, e.target.value)}
-                              onBlur={() => handleRpBlur(player)}
-                              placeholder={player.currentRp.toString()}
-                              className="input w-20 text-center py-1 text-sm"
-                            />
-                            {savingRp === player.odlierId && (
-                              <div className="absolute right-1 top-1/2 -translate-y-1/2">
-                                <div className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin" />
-                              </div>
-                            )}
-                          </div>
-                        ) : (
-                          <span className={`font-medium ${player.currentRp >= 0 ? 'text-success' : 'text-error'}`}>
-                            {player.currentRp > 0 ? '+' : ''}{player.currentRp}
-                          </span>
-                        )}
-                      </div>
-                    </td>
-                    {isHost && (
-                      <td>
-                        <div className="flex items-center justify-center gap-2">
-                          <input
-                            type="number"
-                            value={player.damageInput}
-                            onChange={(e) => handleInputChange(player.odlierId, 'damageInput', e.target.value)}
-                            placeholder="Dmg"
-                            min={0}
-                            className="input w-20 text-center py-1 text-sm"
-                          />
-                          <input
-                            type="number"
-                            value={player.killsInput}
-                            onChange={(e) => handleInputChange(player.odlierId, 'killsInput', e.target.value)}
-                            placeholder="Kills"
-                            min={0}
-                            className="input w-16 text-center py-1 text-sm"
-                          />
-                        </div>
-                      </td>
-                    )}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        {/* Action Buttons */}
-        <div className="flex flex-wrap gap-3">
-          {isHost ? (
-            <>
+    <main className="min-h-screen bg-[#050608] text-slate-100 px-4 py-8">
+      <ConfirmModal
+        isOpen={showNewSessionConfirm}
+        title="Start a new session?"
+        message="This will reset all current stats and start fresh. Are you sure?"
+        confirmText="Yes, Reset"
+        cancelText="No"
+        onConfirm={resetSession}
+        onCancel={() => setShowNewSessionConfirm(false)}
+        variant="danger"
+      />
+      
+      {/* End Session Modal */}
+      {showEndSession && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md rounded-2xl bg-[#121418] border border-[#2A2E32] shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            {/* Header */}
+            <div className="flex items-center justify-between p-5 border-b border-[#2A2E32]">
+              <h2 className="text-lg font-bold text-white">End Session</h2>
               <button
-                onClick={handleAddGame}
-                disabled={addingGame || players.length === 0}
-                className="btn-primary"
+                onClick={() => setShowEndSession(false)}
+                className="w-8 h-8 rounded-lg bg-[#1F2228] hover:bg-[#2A2E32] flex items-center justify-center text-slate-400 hover:text-white transition-colors cursor-pointer"
               >
-                {addingGame ? (
-                  <>
-                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                    Adding...
-                  </>
-                ) : (
-                  <>
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            
+            {/* Body */}
+            <div className="p-5">
+              <p className="text-sm text-slate-400 mb-6">
+                Choose how you want to end this session. Your stats will be saved either way.
+              </p>
+              
+              <div className="space-y-3">
+                {/* Post to Discord Option */}
+                <button
+                  onClick={postToDiscord}
+                  disabled={posting || saving}
+                  className="w-full flex items-center gap-4 p-4 rounded-xl bg-[#5865F2]/10 border border-[#5865F2]/30 hover:bg-[#5865F2]/20 hover:border-[#5865F2]/50 transition-all group disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                >
+                  <div className="w-12 h-12 rounded-xl bg-[#5865F2] flex items-center justify-center flex-shrink-0">
+                    <svg className="w-6 h-6 text-white" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03z"/>
                     </svg>
-                    Add Game
-                  </>
-                )}
-              </button>
-              <button
-                onClick={() => setShowEndSessionModal(true)}
-                className="btn-danger"
-              >
-                End Session
-              </button>
-            </>
-          ) : (
-            <button onClick={handleLeaveSession} className="btn-secondary">
-              Leave Session
-            </button>
-          )}
-        </div>
-
-        {/* Game History */}
-        {gameHistory.length > 0 && (
-          <div className="mt-8">
-            <div className="section-header">
-              <div className="indicator" />
-              <div className="title">Game History</div>
+                  </div>
+                  <div className="flex-1 text-left">
+                    <div className="font-semibold text-white group-hover:text-[#5865F2] transition-colors">
+                      {posting ? 'Posting...' : 'Post to Discord'}
+                    </div>
+                    <div className="text-xs text-slate-500">
+                      Share results with your squad and save to database
+                    </div>
+                  </div>
+                  <svg className="w-5 h-5 text-slate-500 group-hover:text-[#5865F2] transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                </button>
+                
+                {/* Save Session Only Option */}
+                <button
+                  onClick={saveSessionOnly}
+                  disabled={posting || saving}
+                  className="w-full flex items-center gap-4 p-4 rounded-xl bg-[#1F2228] border border-[#2A2E32] hover:bg-[#252930] hover:border-[#3A3F45] transition-all group disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                >
+                  <div className="w-12 h-12 rounded-xl bg-[#2A2E32] flex items-center justify-center flex-shrink-0">
+                    <svg className="w-6 h-6 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
+                    </svg>
+                  </div>
+                  <div className="flex-1 text-left">
+                    <div className="font-semibold text-slate-200 group-hover:text-white transition-colors">
+                      {saving ? 'Saving...' : 'Save Session Only'}
+                    </div>
+                    <div className="text-xs text-slate-500">
+                      Save stats to database without posting
+                    </div>
+                  </div>
+                  <svg className="w-5 h-5 text-slate-500 group-hover:text-slate-300 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                </button>
+              </div>
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3">
-              {gameHistory.map((game, idx) => (
-                <div key={game.id} className="card p-3 text-center">
-                  <div className="text-xs text-tertiary mb-1">Game {idx + 1}</div>
-                  <div className="text-sm text-secondary">
-                    {new Date(game.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            
+            {/* Footer */}
+            <div className="px-5 pb-5">
+              <button
+                onClick={() => setShowEndSession(false)}
+                className="w-full py-2.5 text-sm text-slate-500 hover:text-slate-300 transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Notification Modal */}
+      <ConfirmModal
+        isOpen={showNotification}
+        title={notificationTitle}
+        message={notificationMessage}
+        confirmText="OK"
+        onConfirm={() => setShowNotification(false)}
+        onCancel={() => setShowNotification(false)}
+        variant={notificationType === 'error' ? 'danger' : 'default'}
+      />
+
+      <div className="page-container py-6">
+        {/* Session Code Banner */}
+        {sessionCode && (
+          <div className="mb-6 rounded-2xl bg-gradient-to-r from-[#E03A3E]/20 via-[#E03A3E]/10 to-transparent border border-[#E03A3E]/30 p-4 flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-xl bg-[#E03A3E]/20 flex items-center justify-center">
+                <svg className="w-6 h-6 text-[#E03A3E]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.14 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0" />
+                </svg>
+              </div>
+              <div>
+                <div className="text-[10px] text-slate-500 uppercase tracking-[0.2em] mb-1">
+                  Session Code
+                </div>
+                <div className="text-2xl font-bold tracking-[0.15em] text-[#E03A3E] font-mono">
+                  {sessionCode}
+                </div>
+              </div>
+            </div>
+            
+            <button
+              onClick={handleCopyCode}
+              className={`px-4 py-2.5 rounded-xl text-sm font-semibold transition-all flex items-center gap-2 cursor-pointer ${
+                copied
+                  ? 'bg-green-500 text-white'
+                  : 'bg-[#E03A3E]/10 text-[#E03A3E] border border-[#E03A3E]/50 hover:bg-[#E03A3E] hover:text-white'
+              }`}
+            >
+              {copied ? (
+                <>
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                  Copied!
+                </>
+              ) : (
+                <>
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                  </svg>
+                  Copy Code
+                </>
+              )}
+            </button>
+          </div>
+        )}
+
+        <header className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight text-[#F5F5F5]">
+              <span className="mr-2 inline-block border-l-4 border-[#E03A3E] pl-2 uppercase text-xs tracking-[0.2em] text-slate-400">
+                Season {season.season_number} • {isHost ? 'Host' : 'Player'}
+              </span>
+              <span className="block text-2xl sm:text-3xl text-[#E03A3E]">
+                Trio Session Tracker
+              </span>
+            </h1>
+            <p className="mt-2 text-xs sm:text-sm text-slate-400">
+              {isHost ? (
+                <>
+                  Enter stats and hit{' '}
+                  <span className="font-semibold text-slate-200">Add Game</span>
+                  . Players can update their own RP.
+                </>
+              ) : (
+                <>
+                  Viewing live session. You can only update{' '}
+                  <span className="font-semibold text-slate-200">
+                    your own RP
+                  </span>
+                  .
+                </>
+              )}
+            </p>
+            {/* NEW: Last Refreshed Indicator */}
+            {lastRefreshed && !isHost && (
+              <p className="mt-1 text-xs text-slate-500">
+                Last updated: {lastRefreshed.toLocaleTimeString()}
+              </p>
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+            {/* NEW: Refresh Button for non-hosts */}
+            {!isHost && sessionId && (
+              <button
+                onClick={handleRefresh}
+                disabled={refreshing}
+                className={secondaryButton}
+              >
+                {refreshing ? '🔄 Refreshing...' : '🔄 Refresh Tracker'}
+              </button>
+            )}
+            {isHost && (
+              <>
+                <button
+                  onClick={() => setShowAddPlayer(true)}
+                  disabled={players.length >= MAX_PLAYERS}
+                  className={secondaryButton}
+                >
+                  + Add Player
+                </button>
+                <button
+                  onClick={() => setShowNewSessionConfirm(true)}
+                  className={secondaryButton}
+                >
+                  New Session
+                </button>
+              </>
+            )}
+            {!sessionCode && (
+              <button onClick={createSession} className={primaryButton}>
+                Start Session
+              </button>
+            )}
+            <button
+              onClick={() => router.push('/app')}
+              className={secondaryButton}
+            >
+              Home
+            </button>
+          </div>
+        </header>
+
+        {error && (
+          <div className="mb-4 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+            {error}
+          </div>
+        )}
+
+        {showAddPlayer && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+            <div className="w-full max-w-3xl rounded-lg bg-[#121418] border border-[#2A2E32] shadow-lg">
+              <div className="p-6 border-b border-[#2A2E32]">
+                <h2 className="text-lg font-semibold text-white">
+                  Add Players to Session
+                </h2>
+                <p className="text-xs text-slate-400 mt-1">
+                  Select registered players to add to this session
+                </p>
+              </div>
+              
+              <div className="p-6">
+                {modalError && (
+                  <div className="mb-4 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+                    {modalError}
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-300 mb-3">
+                      Available Players
+                    </h3>
+                    <div className="space-y-2 max-h-[300px] overflow-y-auto">
+                      {availableProfiles.length === 0 ? (
+                        <div className="text-xs text-slate-500 text-center py-8">
+                          No more players available
+                        </div>
+                      ) : (
+                        availableProfiles.map((player) => (
+                          <div
+                            key={player.id}
+                            className="flex items-center justify-between p-3 rounded-lg bg-[#181B1F] border border-[#2A2E32] hover:border-[#E03A3E]/50 transition"
+                          >
+                            <span className="text-sm text-slate-200">
+                              {player.display_name}
+                            </span>
+                            <button
+                              onClick={() => addToSelection(player.id)}
+                              disabled={selectedPlayerIds.length + players.length >= MAX_PLAYERS}
+                              className="w-7 h-7 rounded-lg bg-[#E03A3E] hover:bg-[#B71C1C] text-white flex items-center justify-center transition disabled:opacity-50 disabled:cursor-not-allowed"
+                              title="Add player"
+                            >
+                              <span className="text-lg leading-none">+</span>
+                            </button>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-300 mb-3">
+                      Selected Players ({selectedProfiles.length})
+                    </h3>
+                    <div className="space-y-2 max-h-[300px] overflow-y-auto">
+                      {selectedProfiles.length === 0 ? (
+                        <div className="text-xs text-slate-500 text-center py-8">
+                          No players selected yet
+                        </div>
+                      ) : (
+                        selectedProfiles.map((player) => (
+                          <div
+                            key={player.id}
+                            className="flex items-center justify-between p-3 rounded-lg bg-[#1F2228] border border-[#E03A3E]/30"
+                          >
+                            <span className="text-sm text-slate-200">
+                              {player.display_name}
+                            </span>
+                            <button
+                              onClick={() => removeFromSelection(player.id)}
+                              className="w-7 h-7 rounded-lg bg-[#2A2E32] hover:bg-red-600/20 text-slate-400 hover:text-red-400 flex items-center justify-center transition"
+                              title="Remove player"
+                            >
+                              <span className="text-lg leading-none">−</span>
+                            </button>
+                          </div>
+                        ))
+                      )}
+                    </div>
                   </div>
                 </div>
-              ))}
+              </div>
+
+              <div className="p-6 border-t border-[#2A2E32] flex justify-end gap-3">
+                <button onClick={cancelAddPlayers} className={secondaryButton}>
+                  Cancel
+                </button>
+                <button
+                  onClick={confirmAddPlayers}
+                  disabled={selectedProfiles.length === 0}
+                  className={primaryButton}
+                >
+                  Add {selectedProfiles.length > 0 ? `${selectedProfiles.length} ` : ''}Player{selectedProfiles.length !== 1 ? 's' : ''}
+                </button>
+              </div>
             </div>
           </div>
         )}
+
+        <section className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="rounded-2xl border border-[#2A2E32] bg-[#121418] p-4 shadow-sm">
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">
+              Games
+            </div>
+            <div className="text-xl font-semibold text-slate-100">
+              {sessionGames}
+            </div>
+          </div>
+          <div className="rounded-2xl border border-[#2A2E32] bg-[#121418] p-4 shadow-sm">
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">
+              Wins
+            </div>
+            <div className="text-xl font-semibold text-[#C9A86A]">{wins}</div>
+          </div>
+          <div className="rounded-2xl border border-[#2A2E32] bg-[#121418] p-4 shadow-sm">
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">
+              Avg Placement
+            </div>
+            <div className="text-xl font-semibold text-slate-100">
+              {avgPlacement.toFixed(1)}
+            </div>
+          </div>
+          <div className="rounded-2xl border border-[#2A2E32] bg-gradient-to-br from-[#181B1F] via-[#1F2228] to-[#3A0F13] p-4 shadow-sm">
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400">
+              Squad RP
+            </div>
+            <div className="text-xl font-semibold text-[#E03A3E]">
+              {players.reduce((acc, p) => acc + p.totalRP, 0)}
+            </div>
+          </div>
+        </section>
+
+        <section className="mb-4 rounded-2xl border border-[#2A2E32] bg-[#121418] p-4 shadow-sm">
+          <h2 className="mb-3 text-xs sm:text-sm font-semibold text-slate-200 flex items-center gap-2">
+            <span className="h-3 w-1 rounded-sm bg-[#E03A3E]" />
+            Data Entry
+          </h2>
+          <div className="grid gap-3">
+            {players.map((p, idx) => (
+              <div
+                key={p.odlId}
+                className="grid grid-cols-1 items-center gap-2 rounded-xl bg-[#181B1F]/60 px-3 py-2 sm:grid-cols-12"
+              >
+                <div className="text-xs font-semibold text-slate-500 sm:col-span-1">
+                  #{idx + 1}
+                </div>
+                <div className="sm:col-span-3">
+                  <div className="w-full rounded-xl border border-[#2A2E32] bg-[#0E1115] px-3 py-2 text-sm text-slate-100">
+                    {p.name || '(no name)'}
+                  </div>
+                </div>
+                <div className="sm:col-span-3">
+                  <input
+                    inputMode="numeric"
+                    type="number"
+                    min={0}
+                    value={p.damageInput}
+                    onChange={(e) =>
+                      updateField(p.odlId, 'damageInput', e.target.value)
+                    }
+                    placeholder="Damage (e.g. 1200)"
+                    disabled={!isHost}
+                    className={inputClass}
+                  />
+                </div>
+                <div className="sm:col-span-3">
+                  <input
+                    inputMode="numeric"
+                    type="number"
+                    min={0}
+                    value={p.killsInput}
+                    onChange={(e) =>
+                      updateField(p.odlId, 'killsInput', e.target.value)
+                    }
+                    placeholder="Kills (e.g. 3)"
+                    disabled={!isHost}
+                    className={inputClass}
+                  />
+                </div>
+                <div className="sm:col-span-2 flex justify-end">
+                  {isHost && players.length > 1 && (
+                    <button
+                      onClick={() => removePlayer(p.odlId)}
+                      className="w-full rounded-xl border border-[#2A2E32] bg-[#181B1F] px-2 py-2 text-xs text-slate-300 hover:border-[#E03A3E] hover:bg-[#20242A] hover:text-white shadow-sm cursor-pointer"
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-slate-400">Placement:</span>
+              <input
+                type="number"
+                min={1}
+                max={20}
+                value={placementInput}
+                onChange={(e) => setPlacementInput(e.target.value)}
+                placeholder="1-20"
+                disabled={!isHost}
+                className="w-20 rounded-xl border border-[#2A2E32] bg-[#0E1115] px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-[#E03A3E] focus:ring-1 focus:ring-[#E03A3E] disabled:opacity-50"
+              />
+            </div>
+            <button
+              onClick={addGameAll}
+              disabled={!isHost}
+              className={primaryButton}
+            >
+              Add Game ▶
+            </button>
+            <button
+              onClick={undoGameAll}
+              disabled={!isHost || gameHistory.length === 0}
+              className={secondaryButton}
+            >
+              ◀ Undo Last Game
+            </button>
+          </div>
+        </section>
+
+        <section className="mb-4 rounded-2xl border border-[#2A2E32] bg-[#121418] p-4 shadow-sm">
+          <h2 className="mb-3 text-xs sm:text-sm font-semibold text-slate-200 flex items-center gap-2">
+            <span className="h-3 w-1 rounded-sm bg-[#E03A3E]" />
+            Player RP
+            <span className="ml-2 px-2 py-0.5 rounded-full bg-green-500/20 text-green-400 text-[10px] font-medium uppercase tracking-wider">
+              Live
+            </span>
+          </h2>
+          <p className="text-[11px] text-slate-500 mb-3">
+            Each player tracks their own RP. Enter RP change per match (can be
+            negative). Updates sync in realtime.
+          </p>
+          <div className="grid gap-3">
+            {players.map((p, idx) => {
+              const isMe = p.odlierId === profile.id;
+              const canEdit = isHost || isMe;
+              return (
+                <div
+                  key={p.odlId}
+                  className={`flex flex-wrap items-center gap-3 rounded-xl px-3 py-2 ${isMe ? 'bg-[#1F2228] border border-[#E03A3E]/30' : 'bg-[#181B1F]/60'}`}
+                >
+                  <div className="text-xs font-semibold text-slate-500 w-6">
+                    #{idx + 1}
+                  </div>
+                  <div className="text-sm text-slate-200 min-w-[100px]">
+                    {p.name || '(no name)'}
+                    {isMe && (
+                      <span className="ml-2 text-xs text-[#E03A3E]">(You)</span>
+                    )}
+                  </div>
+                  <div className="text-sm font-semibold text-[#E03A3E] min-w-[80px]">
+                    RP: {p.totalRP > 0 ? '+' : ''}
+                    {p.totalRP}
+                  </div>
+                  <input
+                    type="number"
+                    value={p.rpInput}
+                    onChange={(e) =>
+                      updateField(p.odlId, 'rpInput', e.target.value)
+                    }
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') commitRP(p.odlId);
+                    }}
+                    placeholder="e.g. 45 or -23"
+                    disabled={!canEdit}
+                    className="w-32 rounded-xl border border-[#2A2E32] bg-[#0E1115] px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-[#E03A3E] focus:ring-1 focus:ring-[#E03A3E] disabled:opacity-50"
+                  />
+                  <button
+                    onClick={() => commitRP(p.odlId)}
+                    disabled={!canEdit || savingRP === p.odlId}
+                    className={`${primaryButton} py-2`}
+                  >
+                    {savingRP === p.odlId ? 'Saving...' : 'Add RP'}
+                  </button>
+                  <button
+                    onClick={() => undoRP(p.odlId)}
+                    disabled={!canEdit || p.rpHistory.length === 0}
+                    className={`${secondaryButton} py-2`}
+                  >
+                    Undo
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+
+        <div className="overflow-x-auto rounded-2xl border border-[#2A2E32] bg-[#121418] shadow-sm">
+          <div className="px-4 py-3 border-b border-[#2A2E32] flex items-center gap-2">
+            <span className="h-3 w-1 rounded-sm bg-[#E03A3E]" />
+            <span className="text-xs sm:text-sm font-semibold text-slate-200">Session Stats</span>
+            <span className="ml-2 px-2 py-0.5 rounded-full bg-green-500/20 text-green-400 text-[10px] font-medium uppercase tracking-wider">
+              Live
+            </span>
+          </div>
+          <table className="w-full text-left text-xs sm:text-sm">
+            <thead className="bg-[#181B1F] text-slate-300 border-b border-[#2A2E32]">
+              <tr>
+                <th className="px-4 py-3 w-[44px] text-[11px] uppercase tracking-[0.16em]">
+                  #
+                </th>
+                <th className="px-4 py-3 text-[11px] uppercase tracking-[0.16em]">
+                  Name
+                </th>
+                <th className="px-4 py-3 text-[11px] uppercase tracking-[0.16em]">
+                  Total Damage
+                </th>
+                <th className="px-4 py-3 text-[11px] uppercase tracking-[0.16em]">
+                  Total Kills
+                </th>
+                <th className="px-4 py-3 text-[11px] uppercase tracking-[0.16em]">
+                  1k Games
+                </th>
+                <th className="px-4 py-3 text-[11px] uppercase tracking-[0.16em]">
+                  2k Games
+                </th>
+                <th className="px-4 py-3 text-[11px] uppercase tracking-[0.16em]">
+                  Avg Damage
+                </th>
+                <th className="px-4 py-3 text-[11px] uppercase tracking-[0.16em]">
+                  Donuts
+                </th>
+                <th className="px-4 py-3 text-[11px] uppercase tracking-[0.16em]">
+                  RP
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {players.map((p, idx) => {
+                const avgs = derived.find((d) => d.odlId === p.odlId)!;
+                return (
+                  <tr
+                    key={p.odlId}
+                    className="border-t border-[#1D2026] odd:bg-[#101319] even:bg-[#121418] hover:bg-[#181B23] transition-colors"
+                  >
+                    <td className="px-4 py-3 text-slate-500">{idx + 1}</td>
+                    <td className="px-4 py-3 text-slate-100">
+                      {p.name || '—'}
+                    </td>
+                    <td className="px-4 py-3 text-slate-200">
+                      {p.totalDamage.toLocaleString()}
+                    </td>
+                    <td className="px-4 py-3 text-slate-200">{p.totalKills}</td>
+                    <td className="px-4 py-3 text-slate-200">{p.oneKGames}</td>
+                    <td className="px-4 py-3 text-slate-200">{p.twoKGames}</td>
+                    <td className="px-4 py-3 text-slate-200">
+                      {avgs.avgDamage.toFixed(0)}
+                    </td>
+                    <td className="px-4 py-3 text-slate-200">{p.donuts}</td>
+                    <td className="px-4 py-3 text-[#E03A3E] font-semibold">
+                      {p.totalRP > 0 ? '+' : ''}
+                      {p.totalRP}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+            <tfoot>
+              <tr className="border-t border-[#2A2E32] bg-[#181B1F] font-semibold text-slate-100">
+                <td className="px-4 py-3 text-slate-500">—</td>
+                <td className="px-4 py-3 text-slate-300">Totals</td>
+                <td className="px-4 py-3">
+                  {players
+                    .reduce((acc, p) => acc + p.totalDamage, 0)
+                    .toLocaleString()}
+                </td>
+                <td className="px-4 py-3">
+                  {players.reduce((acc, p) => acc + p.totalKills, 0)}
+                </td>
+                <td className="px-4 py-3">
+                  {players.reduce((acc, p) => acc + p.oneKGames, 0)}
+                </td>
+                <td className="px-4 py-3">
+                  {players.reduce((acc, p) => acc + p.twoKGames, 0)}
+                </td>
+                <td className="px-4 py-3">{groupAvgDamage.toFixed(0)}</td>
+                <td className="px-4 py-3">
+                  {players.reduce((acc, p) => acc + p.donuts, 0)}
+                </td>
+                <td className="px-4 py-3 text-[#E03A3E]">
+                  {players.reduce((acc, p) => acc + p.totalRP, 0)}
+                </td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+
+        <div className="mt-6 flex flex-wrap items-center gap-3">
+          {isHost && (
+            <button
+              onClick={() => setShowEndSession(true)}
+              className={successButton}
+            >
+              End Session
+            </button>
+          )}
+          <button
+            onClick={() => router.push('/app/season-progression')}
+            className={secondaryButton}
+          >
+            View Season Progression
+          </button>
+        </div>
       </div>
-
-      {/* End Session Modal */}
-      <EndSessionModal
-        isOpen={showEndSessionModal}
-        onClose={() => setShowEndSessionModal(false)}
-        onEndSession={handleEndSession}
-      />
-
-      {/* Generic Confirm Modal */}
-      <ConfirmModal
-        isOpen={showConfirmModal}
-        title="Confirm Action"
-        message={confirmMessage}
-        confirmText="Confirm"
-        cancelText="Cancel"
-        onConfirm={async () => {
-          if (confirmAction) await confirmAction();
-          setShowConfirmModal(false);
-          setConfirmAction(null);
-        }}
-        onCancel={() => {
-          setShowConfirmModal(false);
-          setConfirmAction(null);
-        }}
-      />
     </main>
   );
 }
@@ -546,11 +1594,8 @@ export default function InGameTrackerPage() {
   return (
     <Suspense
       fallback={
-        <main className="min-h-[calc(100vh-4rem)] bg-primary flex items-center justify-center">
-          <div className="flex flex-col items-center gap-4">
-            <div className="w-10 h-10 border-2 border-accent border-t-transparent rounded-full animate-spin" />
-            <p className="text-sm text-secondary">Loading...</p>
-          </div>
+        <main className="min-h-screen bg-[#050608] text-slate-100 px-4 py-10 grid place-items-center">
+          <div className="text-sm text-slate-400">Loading…</div>
         </main>
       }
     >

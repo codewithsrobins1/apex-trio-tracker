@@ -22,12 +22,6 @@ type SeasonPlayer = {
   display_name: string;
 };
 
-type RpEntry = {
-  user_id: string;
-  entry_date: string;
-  delta_rp: number;
-};
-
 type PlayerStats = {
   user_id: string;
   display_name: string;
@@ -37,6 +31,7 @@ type PlayerStats = {
   donuts: number;
   oneKGames: number;
   twoKGames: number;
+  rpHistory: { date: string; rp: number }[];
 };
 
 type ChartDataPoint = {
@@ -60,12 +55,15 @@ function formatDateLabel(isoDate: string): string {
   return `${month}/${day}`;
 }
 
-function getDateRange(entries: RpEntry[]): string[] {
-  if (entries.length === 0) return [];
-
-  const dates = new Set(entries.map((e) => e.entry_date));
-  const sortedDates = Array.from(dates).sort();
-
+function getDateRangeFromStats(playerStats: PlayerStats[]): string[] {
+  const allDates = new Set<string>();
+  playerStats.forEach(player => {
+    player.rpHistory.forEach(entry => {
+      allDates.add(entry.date);
+    });
+  });
+  
+  const sortedDates = Array.from(allDates).sort();
   if (sortedDates.length < 2) return sortedDates;
 
   const result: string[] = [];
@@ -115,7 +113,6 @@ export default function SeasonProgressionPage() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [season, setSeason] = useState<Season | null>(null);
   const [players, setPlayers] = useState<SeasonPlayer[]>([]);
-  const [entries, setEntries] = useState<RpEntry[]>([]);
   const [playerStats, setPlayerStats] = useState<PlayerStats[]>([]);
   const [selectedPlayers, setSelectedPlayers] = useState<'all' | string[]>('all');
 
@@ -156,47 +153,29 @@ export default function SeasonProgressionPage() {
 
       setPlayers(playersList);
 
-      // Get all RP entries for this season
-      const { data: rpData, error: rpError } = await supabase
-        .from('season_rp_entries')
-        .select('user_id, entry_date, delta_rp')
-        .eq('season_id', seasonData.id)
-        .order('entry_date', { ascending: true });
-
-      if (rpError) throw rpError;
-
-      setEntries((rpData ?? []) as RpEntry[]);
-
-      // Fetch game stats for all players
+      // Fetch game stats for all players from season_player_stats (including RP)
       const statsPromises = playersList.map(async (player) => {
-        const { data: gameData, error: gameError } = await supabase
-          .from('player_game_stats')
-          .select(`
-            damage,
-            kills,
-            game_stats!inner (
-              live_sessions!inner (
-                season_id
-              )
-            )
-          `)
+        const { data: statsData, error: statsError } = await supabase
+          .from('season_player_stats')
+          .select('games, total_damage, total_kills, one_k_games, two_k_games, donuts, total_rp, created_at')
+          .eq('season_id', seasonData.id)
           .eq('user_id', player.user_id)
-          .eq('game_stats.live_sessions.season_id', seasonData.id);
+          .order('created_at', { ascending: true });
 
-        if (gameError) {
-          console.error('Error fetching stats for', player.display_name, gameError);
+        if (statsError) {
+          console.error('Error fetching stats for', player.display_name, statsError);
           return null;
         }
 
-        const stats = gameData ?? [];
-        const totalKills = stats.reduce((sum, g) => sum + g.kills, 0);
-        const totalDamage = stats.reduce((sum, g) => sum + g.damage, 0);
-        const donuts = stats.filter(g => g.kills === 0).length;
-        const oneKGames = stats.filter(g => g.damage >= 1000).length;
-        const twoKGames = stats.filter(g => g.damage >= 2000).length;
-
-        const playerRpEntries = (rpData ?? []).filter(e => e.user_id === player.user_id);
-        const totalRP = playerRpEntries.reduce((sum, e) => sum + e.delta_rp, 0);
+        // Aggregate all sessions for this player
+        const stats = statsData ?? [];
+        const totalKills = stats.reduce((sum, s) => sum + s.total_kills, 0);
+        const totalDamage = stats.reduce((sum, s) => sum + s.total_damage, 0);
+        const totalGames = stats.reduce((sum, s) => sum + s.games, 0);
+        const donuts = stats.reduce((sum, s) => sum + s.donuts, 0);
+        const oneKGames = stats.reduce((sum, s) => sum + s.one_k_games, 0);
+        const twoKGames = stats.reduce((sum, s) => sum + s.two_k_games, 0);
+        const totalRP = stats.reduce((sum, s) => sum + (s.total_rp || 0), 0);
 
         return {
           user_id: player.user_id,
@@ -207,6 +186,7 @@ export default function SeasonProgressionPage() {
           donuts,
           oneKGames,
           twoKGames,
+          rpHistory: stats.map(s => ({ date: s.created_at.split('T')[0], rp: s.total_rp || 0 })),
         };
       });
 
@@ -226,20 +206,28 @@ export default function SeasonProgressionPage() {
   }, [loadData]);
 
   const chartData = useMemo((): ChartDataPoint[] => {
-    if (players.length === 0 || entries.length === 0) return [];
+    if (players.length === 0 || playerStats.length === 0) return [];
 
-    const dates = getDateRange(entries);
+    const dates = getDateRangeFromStats(playerStats);
     if (dates.length === 0) return [];
 
-    const entriesByDateUser: Record<string, Record<string, number>> = {};
-    for (const entry of entries) {
-      if (!entriesByDateUser[entry.entry_date]) {
-        entriesByDateUser[entry.entry_date] = {};
+    // Build cumulative RP by date for each player
+    const cumulativeByPlayer: Record<string, Record<string, number>> = {};
+    
+    for (const player of playerStats) {
+      cumulativeByPlayer[player.user_id] = {};
+      let cumulative = 0;
+      
+      // Sort rpHistory by date
+      const sortedHistory = [...player.rpHistory].sort((a, b) => a.date.localeCompare(b.date));
+      
+      for (const entry of sortedHistory) {
+        cumulative += entry.rp;
+        cumulativeByPlayer[player.user_id][entry.date] = cumulative;
       }
-      const current = entriesByDateUser[entry.entry_date][entry.user_id] ?? 0;
-      entriesByDateUser[entry.entry_date][entry.user_id] = current + entry.delta_rp;
     }
 
+    // Build chart data points
     const cumulative: Record<string, number> = {};
     players.forEach((p) => (cumulative[p.user_id] = 0));
 
@@ -247,14 +235,16 @@ export default function SeasonProgressionPage() {
       const point: ChartDataPoint = { date: formatDateLabel(date) };
 
       for (const player of players) {
-        const dayDelta = entriesByDateUser[date]?.[player.user_id] ?? 0;
-        cumulative[player.user_id] += dayDelta;
+        // Get the cumulative value for this date, or use the last known value
+        if (cumulativeByPlayer[player.user_id]?.[date] !== undefined) {
+          cumulative[player.user_id] = cumulativeByPlayer[player.user_id][date];
+        }
         point[player.display_name] = cumulative[player.user_id];
       }
 
       return point;
     });
-  }, [entries, players]);
+  }, [playerStats, players]);
 
   const visiblePlayers = useMemo(() => {
     if (selectedPlayers === 'all') return players;

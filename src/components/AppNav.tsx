@@ -1,7 +1,7 @@
 'use client';
 
 import { usePathname, useRouter } from 'next/navigation';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { supabase } from '@/lib/supabase/client';
 import { ThemeToggle } from './ThemeProvider';
 import { fetchMyProfile, type Profile } from '@/lib/auth';
@@ -11,6 +11,11 @@ export default function AppNav() {
   const router = useRouter();
   const [profile, setProfile] = useState<Profile | null>(null);
   const [signingOut, setSigningOut] = useState(false);
+  
+  // Refs for measuring button positions
+  const containerRef = useRef<HTMLDivElement>(null);
+  const buttonRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const [pillStyle, setPillStyle] = useState({ width: 0, left: 0 });
 
   useEffect(() => {
     fetchMyProfile().then(setProfile).catch(console.error);
@@ -19,7 +24,7 @@ export default function AppNav() {
   const handleSignOut = async () => {
     setSigningOut(true);
     await supabase.auth.signOut();
-    router.push('/');
+    router.push('/gate');
   };
 
   const navItems = [
@@ -33,6 +38,33 @@ export default function AppNav() {
     }
     return pathname.startsWith(href);
   };
+
+  // Find active index
+  const activeIndex = navItems.findIndex((item) => isActive(item.href));
+
+  // Update pill position when active tab changes or on mount
+  useEffect(() => {
+    const updatePillPosition = () => {
+      const activeButton = buttonRefs.current[activeIndex];
+      const container = containerRef.current;
+      
+      if (activeButton && container) {
+        const containerRect = container.getBoundingClientRect();
+        const buttonRect = activeButton.getBoundingClientRect();
+        
+        setPillStyle({
+          width: buttonRect.width,
+          left: buttonRect.left - containerRect.left,
+        });
+      }
+    };
+
+    updatePillPosition();
+    
+    // Also update on resize
+    window.addEventListener('resize', updatePillPosition);
+    return () => window.removeEventListener('resize', updatePillPosition);
+  }, [activeIndex]);
 
   return (
     <nav className="sticky top-0 z-50 w-full border-b border-themed bg-primary/80 backdrop-blur-xl">
@@ -54,16 +86,30 @@ export default function AppNav() {
             </div>
           </button>
 
-          {/* Nav Pills */}
-          <div className="flex gap-1 p-1 rounded-xl bg-card border border-themed">
-            {navItems.map((item) => (
+          {/* Nav Pills with Sliding Background */}
+          <div 
+            ref={containerRef}
+            className="relative flex gap-1 p-1 rounded-xl bg-card border border-themed"
+          >
+            {/* Sliding Pill Background */}
+            <div
+              className="absolute top-1 bottom-1 rounded-lg bg-accent shadow-md shadow-accent/30 transition-all duration-300 ease-out"
+              style={{
+                width: pillStyle.width,
+                left: pillStyle.left,
+              }}
+            />
+            
+            {/* Nav Buttons */}
+            {navItems.map((item, index) => (
               <button
                 key={item.href}
+                ref={(el) => { buttonRefs.current[index] = el; }}
                 onClick={() => router.push(item.href)}
-                className={`px-4 py-2 text-sm font-medium rounded-lg transition-all cursor-pointer ${
+                className={`relative z-10 px-4 py-2 text-sm font-medium rounded-lg transition-colors duration-200 cursor-pointer ${
                   isActive(item.href)
-                    ? 'bg-accent text-white shadow-md shadow-accent/30'
-                    : 'text-secondary hover:text-primary hover:bg-card-hover'
+                    ? 'text-white'
+                    : 'text-secondary hover:text-primary'
                 }`}
               >
                 {item.label}
