@@ -92,27 +92,47 @@ function getDateRangeFromStats(playerStats: PlayerStats[]): string[] {
 
 function HighlightCard({
   title,
-  value,
-  playerName,
+  players,
   icon,
   type = 'gold',
 }: {
   title: string;
-  value: string | number;
-  playerName: string;
+  players: { name: string; value: number | string }[];
   icon: React.ReactNode;
   type?: 'gold' | 'shame';
 }) {
+  const [first, ...rest] = players;
+
   return (
     <div className={`highlight-card ${type}`}>
       <div className="flex items-start justify-between mb-3">
         <div className="highlight-icon text-2xl">{icon}</div>
         <div className="text-xs text-tertiary uppercase tracking-wider text-right">{title}</div>
       </div>
-      <div className="text-2xl font-bold text-primary mb-1">
-        {typeof value === 'number' ? value.toLocaleString() : value}
-      </div>
-      <div className="text-sm text-secondary">{playerName}</div>
+
+      {first && (
+        <>
+          <div className="text-[11px] text-tertiary uppercase tracking-wide mb-1">#1</div>
+          <div className="text-2xl font-bold text-primary leading-tight">
+            {typeof first.value === 'number' ? first.value.toLocaleString() : first.value}
+          </div>
+          <div className="text-sm text-secondary mb-2">{first.name}</div>
+        </>
+      )}
+
+      {rest.length > 0 && (
+        <div className="mt-1 space-y-1 text-xs text-tertiary">
+          {rest.map((p, idx) => (
+            <div key={p.name} className="flex items-center justify-between gap-2">
+              <span className="uppercase tracking-wide">#{idx + 2}</span>
+              <span className="truncate">{p.name}</span>
+              <span className="tabular-nums">
+                {typeof p.value === 'number' ? p.value.toLocaleString() : p.value}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -127,6 +147,7 @@ export default function SeasonProgressionPage() {
   const [players, setPlayers] = useState<SeasonPlayer[]>([]);
   const [playerStats, setPlayerStats] = useState<PlayerStats[]>([]);
   const [bestSession, setBestSession] = useState<BestSession | null>(null);
+  const [worstSession, setWorstSession] = useState<BestSession | null>(null);
   const [selectedPlayers, setSelectedPlayers] = useState<'all' | string[]>('all');
 
   const loadData = useCallback(async () => {
@@ -238,23 +259,38 @@ export default function SeasonProgressionPage() {
           });
         }
 
-        // Find session with highest total RP
+        // Find sessions with highest total RP and lowest total RP (biggest loss)
         let best: BestSession | null = null;
+        let worst: BestSession | null = null;
         let bestTotal = -Infinity;
+        let worstTotal = Infinity;
 
         for (const session of Object.values(sessionMap)) {
           const total = session.players.reduce((sum, p) => sum + p.rp, 0);
+          const sortedDesc = [...session.players].sort((a, b) => b.rp - a.rp);
+          const sortedAsc = [...session.players].sort((a, b) => a.rp - b.rp);
+
           if (total > bestTotal) {
             bestTotal = total;
             best = {
               date: session.date,
               totalRP: total,
-              players: session.players.sort((a, b) => b.rp - a.rp),
+              players: sortedDesc,
+            };
+          }
+
+          if (total < worstTotal) {
+            worstTotal = total;
+            worst = {
+              date: session.date,
+              totalRP: total,
+              players: sortedAsc,
             };
           }
         }
 
         setBestSession(best);
+        setWorstSession(worst);
       }
 
     } catch (err) {
@@ -316,14 +352,49 @@ export default function SeasonProgressionPage() {
   const highlights = useMemo(() => {
     if (playerStats.length === 0) return null;
 
-    const mostKills = playerStats.reduce((max, p) => p.totalKills > max.totalKills ? p : max, playerStats[0]);
-    const mostDamage = playerStats.reduce((max, p) => p.totalDamage > max.totalDamage ? p : max, playerStats[0]);
-    const mostRP = playerStats.reduce((max, p) => p.totalRP > max.totalRP ? p : max, playerStats[0]);
-    const mostDonuts = playerStats.reduce((max, p) => p.donuts > max.donuts ? p : max, playerStats[0]);
-    const most1K = playerStats.reduce((max, p) => p.oneKGames > max.oneKGames ? p : max, playerStats[0]);
-    const most2K = playerStats.reduce((max, p) => p.twoKGames > max.twoKGames ? p : max, playerStats[0]);
+    const sortBy = <K extends keyof PlayerStats>(key: K, desc: boolean = true) =>
+      [...playerStats].sort((a, b) =>
+        desc ? (b[key] as number) - (a[key] as number) : (a[key] as number) - (b[key] as number)
+      );
 
-    return { mostKills, mostDamage, mostRP, mostDonuts, most1K, most2K };
+    const top3Kills = sortBy('totalKills').slice(0, 3).map((p) => ({
+      name: p.display_name,
+      value: p.totalKills,
+    }));
+
+    const top3Damage = sortBy('totalDamage').slice(0, 3).map((p) => ({
+      name: p.display_name,
+      value: p.totalDamage,
+    }));
+
+    const top3RP = sortBy('totalRP').slice(0, 3).map((p) => ({
+      name: p.display_name,
+      value: p.totalRP > 0 ? `+${p.totalRP}` : p.totalRP,
+    }));
+
+    const top31K = sortBy('oneKGames').slice(0, 3).map((p) => ({
+      name: p.display_name,
+      value: p.oneKGames,
+    }));
+
+    const top32K = sortBy('twoKGames').slice(0, 3).map((p) => ({
+      name: p.display_name,
+      value: p.twoKGames,
+    }));
+
+    const top3Donuts = sortBy('donuts').slice(0, 3).map((p) => ({
+      name: p.display_name,
+      value: p.donuts,
+    }));
+
+    return {
+      top3Kills,
+      top3Damage,
+      top3RP,
+      top31K,
+      top32K,
+      top3Donuts,
+    };
   }, [playerStats]);
 
   function handleAllChange(checked: boolean) {
@@ -400,49 +471,89 @@ export default function SeasonProgressionPage() {
           </div>
         )}
 
-        {/* Best Squad Session */}
-        {bestSession && bestSession.totalRP > 0 && (
-          <div className="mb-8">
-            <div className="rounded-2xl border-2 border-amber-500/30 bg-gradient-to-r from-amber-500/10 via-amber-500/5 to-transparent p-6">
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-3">
-                  <span className="text-3xl">🏆</span>
-                  <div className="text-xs font-semibold uppercase tracking-wider text-amber-500">
-                    Best Squad Session
+        {/* Best / Worst Squad Session */}
+        {(bestSession || (worstSession && worstSession.totalRP < 0)) && (
+          <div className="mb-8 grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {bestSession && bestSession.totalRP > 0 && (
+              <div className="rounded-2xl border-2 border-amber-500/30 bg-gradient-to-r from-amber-500/10 via-amber-500/5 to-transparent p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-3">
+                    <span className="text-3xl">🏆</span>
+                    <div className="text-xs font-semibold uppercase tracking-wider text-amber-500">
+                      Best Squad Session
+                    </div>
+                  </div>
+                  <div className="text-sm text-secondary">
+                    {formatFullDate(bestSession.date)}
                   </div>
                 </div>
-                <div className="text-sm text-secondary">
-                  {formatFullDate(bestSession.date)}
+                
+                <div className="text-center mb-6">
+                  <div className="text-5xl sm:text-6xl font-extrabold text-accent">
+                    +{bestSession.totalRP.toLocaleString()}
+                  </div>
+                  <div className="text-sm text-secondary mt-1">Total Squad RP</div>
                 </div>
-              </div>
-              
-              <div className="text-center mb-6">
-                <div className="text-5xl sm:text-6xl font-extrabold text-accent">
-                  +{bestSession.totalRP.toLocaleString()}
-                </div>
-                <div className="text-sm text-secondary mt-1">Total Squad RP</div>
-              </div>
 
-              <div className="grid grid-cols-3 gap-4">
-                {bestSession.players.map((player, idx) => (
-                  <div 
-                    key={player.name}
-                    className="bg-card rounded-xl p-4 text-center border border-themed"
-                  >
-                    <div className="text-sm font-semibold text-primary mb-1 truncate">
-                      {player.name}
+                <div className="grid grid-cols-3 gap-4">
+                  {bestSession.players.map((player) => (
+                    <div 
+                      key={player.name}
+                      className="bg-card rounded-xl p-4 text-center border border-themed"
+                    >
+                      <div className="text-sm font-semibold text-primary mb-1 truncate">
+                        {player.name}
+                      </div>
+                      <div className={`text-xl font-bold ${player.rp >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                        {player.rp >= 0 ? '+' : ''}{player.rp}
+                      </div>
                     </div>
-                    <div className={`text-xl font-bold ${player.rp >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                      {player.rp >= 0 ? '+' : ''}{player.rp}
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {worstSession && worstSession.totalRP < 0 && (
+              <div className="rounded-2xl border-2 border-red-500/30 bg-gradient-to-r from-red-500/10 via-red-500/5 to-transparent p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-3">
+                    <span className="text-3xl">💀</span>
+                    <div className="text-xs font-semibold uppercase tracking-wider text-red-500">
+                      Worst Squad Session
                     </div>
                   </div>
-                ))}
+                  <div className="text-sm text-secondary">
+                    {formatFullDate(worstSession.date)}
+                  </div>
+                </div>
+                
+                <div className="text-center mb-6">
+                  <div className="text-5xl sm:text-6xl font-extrabold text-red-500">
+                    {worstSession.totalRP.toLocaleString()}
+                  </div>
+                  <div className="text-sm text-secondary mt-1">Total Squad RP</div>
+                </div>
+
+                <div className="grid grid-cols-3 gap-4">
+                  {worstSession.players.map((player) => (
+                    <div 
+                      key={player.name}
+                      className="bg-card rounded-xl p-4 text-center border border-themed"
+                    >
+                      <div className="text-sm font-semibold text-primary mb-1 truncate">
+                        {player.name}
+                      </div>
+                      <div className={`text-xl font-bold ${player.rp >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                        {player.rp >= 0 ? '+' : ''}{player.rp}
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
-            </div>
+            )}
           </div>
         )}
 
-        {/* Season Awards */}
         {highlights && (
           <div className="mb-8">
             <div className="section-header mb-4">
@@ -452,43 +563,37 @@ export default function SeasonProgressionPage() {
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
               <HighlightCard
                 title="Most Kills"
-                value={highlights.mostKills.totalKills}
-                playerName={highlights.mostKills.display_name}
+                players={highlights.top3Kills}
                 icon="🎯"
                 type="gold"
               />
               <HighlightCard
                 title="Most Damage"
-                value={highlights.mostDamage.totalDamage}
-                playerName={highlights.mostDamage.display_name}
+                players={highlights.top3Damage}
                 icon="💥"
                 type="gold"
               />
               <HighlightCard
                 title="Most RP"
-                value={highlights.mostRP.totalRP > 0 ? `+${highlights.mostRP.totalRP}` : highlights.mostRP.totalRP}
-                playerName={highlights.mostRP.display_name}
+                players={highlights.top3RP}
                 icon="📈"
                 type="gold"
               />
               <HighlightCard
                 title="Most 1K Games"
-                value={highlights.most1K.oneKGames}
-                playerName={highlights.most1K.display_name}
+                players={highlights.top31K}
                 icon="🔥"
                 type="gold"
               />
               <HighlightCard
                 title="Most 2K Games"
-                value={highlights.most2K.twoKGames}
-                playerName={highlights.most2K.display_name}
+                players={highlights.top32K}
                 icon="⚡"
                 type="gold"
               />
               <HighlightCard
                 title="Most Donuts"
-                value={highlights.mostDonuts.donuts}
-                playerName={highlights.mostDonuts.display_name}
+                players={highlights.top3Donuts}
                 icon="🍩"
                 type="shame"
               />
