@@ -15,7 +15,8 @@
     "next": "^15.4.8",
     "react": "^19.2.1",
     "react-dom": "^19.2.1",
-    "recharts": "^3.7.0"
+    "recharts": "^3.7.0",
+    "sass": "^1.97.3"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",
